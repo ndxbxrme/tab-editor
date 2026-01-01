@@ -204,3 +204,31 @@ test("sixteenths entry fills a bar", async ({ page }) => {
   expect(events[0].duration).toBe("16");
   expect(events[15].start).toBe(3.75);
 });
+
+test("shift-click selects a range of notes", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+
+  await page.locator("jg-score-view .hit").first().click();
+  await page.keyboard.type("5");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("5");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("5");
+  await page.waitForTimeout(600);
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const ids = events.slice(0, 3).map(e => e.id);
+  const first = page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`);
+  const third = page.locator(`jg-score-view .hit[data-event-id="${ids[2]}"][data-string-index="0"]`);
+
+  await first.click();
+  await third.click({ modifiers: ["Shift"] });
+
+  const selected = page.locator('jg-score-view .hit.selected[data-string-index="0"]');
+  await expect(selected).toHaveCount(3);
+});

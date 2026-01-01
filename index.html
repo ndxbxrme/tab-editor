@@ -1353,7 +1353,13 @@
           };
 
           // selection state
-          this.sel = { eventId: null, stringIndex: 0 }; // stringIndex: 0..5 corresponds to string 1..6
+          this.sel = {
+            eventId: null,
+            stringIndex: 0, // 0..5 corresponds to string 1..6
+            anchorId: null,
+            rangeIds: [],
+            rangeStringIndex: 0
+          };
           this._fretBuffer = ""; // multi-digit entry
           this._fretBufferTimer = null;
 
@@ -1427,12 +1433,45 @@
         loadPiece(piece) {
           this.piece = piece;
           const first = this.piece?.bars?.[0]?.voices?.[0]?.events?.[0]?.id || null;
-          this.sel.stringIndex = 0;
-          this.sel.eventId = first;
+          this.setSingleSelection(first, 0);
           this.updateActiveDurationFromSelection();
           this.markDirty();
           this.renderScore(() => this.syncInspectorFields());
           this.updateJsonTextarea();
+        }
+        
+        setSingleSelection(eventId, stringIndex = this.sel.stringIndex) {
+          this.sel.eventId = eventId;
+          this.sel.stringIndex = stringIndex;
+          this.sel.anchorId = eventId;
+          this.sel.rangeIds = eventId ? [eventId] : [];
+          this.sel.rangeStringIndex = stringIndex;
+        }
+
+        selectRange(startId, endId, stringIndex = this.sel.stringIndex) {
+          if (!startId || !endId) {
+            this.setSingleSelection(endId, stringIndex);
+            return;
+          }
+          const ordered = [...this._hitIndex]
+            .sort((a, b) => (a.x - b.x) || (a.y - b.y));
+          const orderedIds = [];
+          for (const h of ordered) {
+            if (!orderedIds.includes(h.eventId)) orderedIds.push(h.eventId);
+          }
+          const a = orderedIds.indexOf(startId);
+          const b = orderedIds.indexOf(endId);
+          if (a === -1 || b === -1) {
+            this.setSingleSelection(endId, stringIndex);
+            return;
+          }
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+          this.sel.rangeIds = orderedIds.slice(lo, hi + 1);
+          this.sel.anchorId = startId;
+          this.sel.eventId = endId;
+          this.sel.stringIndex = stringIndex;
+          this.sel.rangeStringIndex = stringIndex;
         }
 
         exportJsonFile() {
@@ -1502,7 +1541,7 @@
             e.preventDefault();
             const startId = this.getTieChainEndId(this.sel.eventId) || this.sel.eventId;
             const { nextId, created } = this.ensureNextSlotFrom(startId);
-              if (nextId) this.sel.eventId = nextId;
+              if (nextId) this.setSingleSelection(nextId);
             this.renderScore(() => this.refreshOverlaySelection());
             return;
           }
@@ -1519,7 +1558,7 @@
             const res = createNextEvent(this.piece, this.sel.eventId, { duration, dots, explicitRest: this.restMode });
             const keepId = res.newEventId || this.sel.eventId;
             this.piece = normalizeVoiceForEvent(res.piece, keepId, { reflow: this.reflowEnabled });
-              if (res.newEventId) this.sel.eventId = res.newEventId;
+              if (res.newEventId) this.setSingleSelection(res.newEventId);
             this.markDirty();
             // select the closest note to the right after re-render (best-effort)
             this.renderScore(() => this.moveNote(1, { clamp: true }));
@@ -1611,7 +1650,7 @@
           if (wasEmpty) {
             const startId = this.getTieChainEndId(this.sel.eventId) || this.sel.eventId;
             const { nextId } = this.ensureNextSlotFrom(startId);
-              if (nextId) this.sel.eventId = nextId;
+              if (nextId) this.setSingleSelection(nextId);
             this.renderScore(() => this.refreshOverlaySelection());
             return;
           }
@@ -1636,7 +1675,7 @@
             if (ni < 0) ni = 0;
             if (ni >= ordered.length) ni = ordered.length - 1;
           }
-          this.sel.eventId = ordered[ni].eventId;
+            this.setSingleSelection(ordered[ni].eventId);
           this.refreshOverlaySelection();
           this.syncInspectorFields();
         }
@@ -1742,7 +1781,7 @@
             const res = createNextEvent(this.piece, this.sel.eventId, { duration, dots, explicitRest: this.restMode });
             const keepId = res.newEventId || this.sel.eventId;
             this.piece = normalizeVoiceForEvent(res.piece, keepId, { reflow: this.reflowEnabled });
-              if (res.newEventId) this.sel.eventId = res.newEventId;
+              if (res.newEventId) this.setSingleSelection(res.newEventId);
             this.markDirty();
             this.renderScore(() => this.moveNote(1, { clamp: true }));
             this.wrap.focus();
@@ -1900,8 +1939,12 @@
         refreshOverlaySelection() {
           // update selected class on hits
           this.shadowRoot.querySelectorAll(".hit").forEach(el => {
-            const match = el.dataset.eventId === this.sel.eventId && Number(el.dataset.stringIndex) === this.sel.stringIndex;
-            el.classList.toggle("selected", match);
+            const isPrimary = el.dataset.eventId === this.sel.eventId
+              && Number(el.dataset.stringIndex) === this.sel.stringIndex;
+            const isRange = this.sel.rangeIds
+              && this.sel.rangeIds.includes(el.dataset.eventId)
+              && Number(el.dataset.stringIndex) === this.sel.rangeStringIndex;
+            el.classList.toggle("selected", isPrimary || isRange);
           });
 
           // caret
@@ -1935,8 +1978,12 @@
 
             div.addEventListener("mousedown", (ev) => {
               ev.preventDefault();
-              this.sel.eventId = h.eventId;
-              this.sel.stringIndex = h.stringIndex;
+              if (ev.shiftKey) {
+                const anchor = this.sel.anchorId || this.sel.eventId || h.eventId;
+                this.selectRange(anchor, h.eventId, h.stringIndex);
+              } else {
+                this.setSingleSelection(h.eventId, h.stringIndex);
+              }
               this._fretBuffer = "";
               clearTimeout(this._fretBufferTimer);
               this.refreshOverlaySelection();
