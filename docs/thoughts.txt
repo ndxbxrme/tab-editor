@@ -1,0 +1,10 @@
+our base aim is to make an app that i can use to construct my own jazz guitar arrangements.
+to that end i want to be able to input
+1/ lead sheets (melody with chords and structure)
+2/ other guitarists arrangements (full tab with chords, these can get pretty dense with tuplets and multiple voices etc)
+3/ excercises (not fully thought through yet)
+
+and after that i want to be able to construct arrangements using elements from the lead sheets.  i should be able to easily nudge the melody around/reharmonize/transpose and add connecting sections (cycles of 5ths etc).
+i should also be able to select a few bars and cycle through sections from the other arrangements (transposed correctly) that use the same harmonization.
+
+i like the idea of keeping everything modularized in webcomponents and it would be cool if the tab-editor component could be used stand-alone (with editing either disabled or tobbleable) so i can use it to show examples inline in a webpage or render excercise sheets to pdf etc.
