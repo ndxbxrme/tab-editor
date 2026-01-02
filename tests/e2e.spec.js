@@ -10,6 +10,8 @@ test("loads editor and renders basic UI", async ({ page }) => {
   await expect(inspector).toBeVisible();
 
   const hit = page.locator("jg-score-view .hit").first();
+  await page.waitForSelector("jg-score-view .hit");
+  await page.locator("jg-score-view .wrap").scrollIntoViewIfNeeded();
   await expect(hit).toBeVisible();
   await hit.click();
 
@@ -231,4 +233,216 @@ test("shift-click selects a range of notes", async ({ page }) => {
 
   const selected = page.locator('jg-score-view .hit.selected[data-string-index="0"]');
   await expect(selected).toHaveCount(3);
+});
+
+test("apply tuplet to mixed-duration range", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+
+  await page.locator('jg-score-view [data-dur="16"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+  await page.keyboard.type("5");
+  await page.waitForTimeout(600);
+
+  await page.locator('jg-score-view [data-dur="32"]').click();
+  await page.keyboard.type("6");
+  await page.waitForTimeout(600);
+
+  await page.locator('jg-score-view [data-dur="16"]').click();
+  await page.keyboard.type("7");
+  await page.waitForTimeout(600);
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const ids = events.slice(0, 3).map(e => e.id);
+
+  const first = page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`);
+  const third = page.locator(`jg-score-view .hit[data-event-id="${ids[2]}"][data-string-index="0"]`);
+
+  await first.click();
+  await third.click({ modifiers: ["Shift"] });
+
+  await page.locator('jg-score-view [data-tuplet="num"]').fill("3");
+  await page.locator('jg-score-view [data-tuplet="occ"]').fill("2");
+  await page.locator('jg-score-view [data-action="apply-tuplet"]').click();
+
+  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed2 = JSON.parse(jsonText2);
+  const events2 = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const selected = events2.filter(e => ids.includes(e.id));
+  const groupIds = Array.from(new Set(selected.map(e => e.tupletGroupId).filter(Boolean)));
+  expect(groupIds.length).toBe(1);
+  const tid = groupIds[0];
+  const def = parsed2.bars[0].tuplets.find(t => t.id === tid);
+  expect(def).toBeTruthy();
+  expect(def.numNotes).toBe(3);
+  expect(def.notesOccupied).toBe(2);
+});
+
+test("joe pass sextuplets fit four beats", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+
+  const enterFret = async (digit) => {
+    await page.keyboard.type(String(digit));
+    await page.waitForTimeout(600);
+  };
+
+  // Beat 1: 6x16th -> sextuplet (6 in the time of 4)
+  await page.locator('jg-score-view [data-dur="16"]').click();
+  for (let i = 0; i < 6; i++) await enterFret(5);
+
+  let jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  let parsed = JSON.parse(jsonText);
+  let events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  let ids = events.map(e => e.id);
+
+  // Apply sextuplet to first 6 notes.
+  const firstRange = ids.slice(0, 6);
+  await page.locator(`jg-score-view .hit[data-event-id="${firstRange[0]}"][data-string-index="0"]`).click();
+  await page.locator(`jg-score-view .hit[data-event-id="${firstRange[5]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
+  await page.locator('jg-score-view [data-tuplet="num"]').fill("6");
+  await page.locator('jg-score-view [data-tuplet="occ"]').fill("4");
+  await page.locator('jg-score-view [data-action="apply-tuplet"]').click();
+
+  // Beat 2: 4x16th + 4x32nd -> sextuplet (mixed)
+  await page.locator('jg-score-view [data-dur="16"]').click();
+  for (let i = 0; i < 4; i++) await enterFret(6);
+  await page.locator('jg-score-view [data-dur="32"]').click();
+  for (let i = 0; i < 4; i++) await enterFret(7);
+
+  jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  parsed = JSON.parse(jsonText);
+  events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  ids = events.map(e => e.id);
+
+  // Apply sextuplet to next 8 mixed notes (still 6 in the time of 4).
+  expect(ids.length).toBeGreaterThanOrEqual(14);
+  const secondRange = ids.slice(6, 14);
+  await page.locator(`jg-score-view .hit[data-event-id="${secondRange[0]}"][data-string-index="0"]`).click();
+  await page.locator(`jg-score-view .hit[data-event-id="${secondRange[7]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
+  await page.locator('jg-score-view [data-tuplet="num"]').fill("6");
+  await page.locator('jg-score-view [data-tuplet="occ"]').fill("4");
+  await page.locator('jg-score-view [data-action="apply-tuplet"]').click();
+
+  // Beat 3: 4x16th
+  await page.locator('jg-score-view [data-dur="16"]').click();
+  for (let i = 0; i < 4; i++) await enterFret(8);
+
+  // Beat 4: 4x16th
+  for (let i = 0; i < 4; i++) await enterFret(9);
+
+  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed2 = JSON.parse(jsonText2);
+
+  // Expect all sounding notes to remain in the first bar.
+  const bar0Notes = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const bar1Notes = parsed2.bars[1]?.voices?.[0]?.events?.filter(e => !e.duration.includes("r")) || [];
+  expect(bar0Notes.length).toBeGreaterThanOrEqual(17);
+  expect(bar1Notes.length).toBe(0);
+});
+
+test("range slur applies from first to last note", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+
+  await page.locator("jg-score-view .hit").first().click();
+  await page.keyboard.type("3");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("5");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("7");
+  await page.waitForTimeout(600);
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const ids = events.slice(0, 3).map(e => e.id);
+
+  await page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`).click();
+  await page.locator(`jg-score-view .hit[data-event-id="${ids[2]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
+  await page.locator('jg-score-view [data-action="slur-range"]').click();
+
+  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed2 = JSON.parse(jsonText2);
+  const slurs = parsed2.bars[0].slurs || [];
+  expect(slurs.some(s => s.from === ids[0] && s.to === ids[2])).toBeTruthy();
+});
+
+test("slide applies to adjacent range selection", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+
+  await page.locator("jg-score-view .hit").first().click();
+  await page.keyboard.type("3");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("5");
+  await page.waitForTimeout(600);
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const ids = events.slice(0, 2).map(e => e.id);
+
+  await page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`).click();
+  await page.locator(`jg-score-view .hit[data-event-id="${ids[1]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
+  await page.locator('jg-score-view [data-action="tech-slide"]').click();
+
+  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed2 = JSON.parse(jsonText2);
+  const tech = parsed2.bars[0].guitar || [];
+  expect(tech.some(t => t.type === "slide" && t.from === ids[0] && t.to === ids[1])).toBeTruthy();
+});
+
+test("add bass voice and enter a note", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-action="add-bass"]').click();
+
+  await page.keyboard.type("5");
+  await page.waitForTimeout(600);
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const voices = parsed.bars[0].voices;
+  const bass = voices.find(v => v.id === "bass");
+  expect(bass).toBeTruthy();
+  const sounding = bass.events.filter(e => e.tones && e.tones.length > 0 && !e.duration.includes("r"));
+  expect(sounding.length).toBeGreaterThan(0);
+});
+
+test("bass voice overflows into next bar", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-action="add-bass"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+
+  const enterFret = async (digit) => {
+    await page.keyboard.type(String(digit));
+    await page.waitForTimeout(600);
+  };
+
+  for (let i = 0; i < 5; i++) {
+    await enterFret(5);
+  }
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const bass0 = parsed.bars[0].voices.find(v => v.id === "bass");
+  const bass1 = parsed.bars[1]?.voices?.find(v => v.id === "bass");
+  const bar0Notes = bass0.events.filter(e => !e.duration.includes("r"));
+  const bar1Notes = (bass1?.events || []).filter(e => !e.duration.includes("r"));
+
+  expect(bar0Notes.length).toBe(4);
+  expect(bar1Notes.length).toBe(1);
 });

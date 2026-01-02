@@ -209,6 +209,13 @@
       function baseDuration(duration) {
         return DURATION_BEATS[duration.replace("r", "")] ?? 0;
       }
+      function durationForBeats(beats) {
+        const entries = Object.entries(DURATION_BEATS);
+        for (const [dur, val] of entries) {
+          if (Math.abs(val - beats) < 1e-6) return dur;
+        }
+        return null;
+      }
       function applyDotsToNote(note, dots = 0) {
         if (!dots) return;
         if (typeof note.addDotToAll === "function") {
@@ -226,11 +233,32 @@
         return b + add;
       }
 
+      function shouldUseSoftMode(events, barLen) {
+        const eps = 1e-6;
+        if (events.some(e => e.tupletGroupId)) return true;
+        const total = events.reduce((sum, ev) =>
+          sum + durationWithDotsBeats(ev.duration.replace("r", ""), ev.dots || 0), 0);
+        return total > barLen + eps;
+      }
+
       function barIsPolyphonic(bar) {
         const soundingVoices = bar.voices.filter(v =>
           v.events.some(ev => !ev.duration.includes("r") && ev.tones && ev.tones.length > 0)
         );
         return soundingVoices.length >= 2;
+      }
+
+      function computeGridStep(bar) {
+        let min = null;
+        bar.voices.forEach(v => {
+          v.events.forEach(ev => {
+            if (isHiddenRestFiller(ev)) return;
+            const beats = baseDuration(ev.duration);
+            if (!beats) return;
+            if (min === null || beats < min) min = beats;
+          });
+        });
+        return min;
       }
 
       // ---------- Beaming ----------
@@ -507,6 +535,26 @@
             continue;
           }
 
+          if (type === "slide-in") {
+            const n = tabNoteById.get(t.on);
+            if (!n) continue;
+
+            const A = getTabAnchor(tabStave, n, t.index ?? 0);
+            const inset = 14;
+            const x2 = A.x - 2;
+            const y2 = A.y - 3;
+            const x1 = x2 - inset;
+            const y1 = y2;
+
+            context.beginPath();
+            context.moveTo(x1, y1);
+            context.lineTo(x2, y2);
+            context.stroke();
+
+            drawArrowHead(context, x2, y2, x2 - x1, y2 - y1, 5);
+            continue;
+          }
+
           if (type === "bend") {
             const n = tabNoteById.get(t.on);
             if (!n) continue;
@@ -539,6 +587,7 @@
         const tuning = piece.tuningMidiByString;
 
         const [beats, beatValue] = (bar.meta?.timeSig || piece.defaults?.timeSig || [4, 4]);
+        const barLen = beats * (4 / beatValue);
         const keySig = (bar.meta?.keySig || piece.defaults?.keySig || "C");
         const clef = (piece.defaults?.clef || "treble");
         const polyphonic = barIsPolyphonic(bar);
@@ -584,7 +633,8 @@
           const hasTuplets = sortedEvents.some(e => !!e.tupletGroupId);
 
           const voice = new Flow.Voice({ num_beats: beats, beat_value: beatValue });
-          voice.setMode(Flow.Voice.Mode.SOFT);
+          const softMode = shouldUseSoftMode(sortedEvents, barLen);
+          voice.setMode(softMode ? Flow.Voice.Mode.SOFT : Flow.Voice.Mode.FULL);
           voice.addTickables(tickables);
           notationVoices.push(voice);
 
@@ -598,15 +648,18 @@
           }
         }
 
-        // TAB “timing spine”: first voice
-        const spineEvents = [...bar.voices[0].events].sort((a, b) => a.start - b.start);
+        const tabVoices = [];
+        const tabEventsByVoice = [];
 
-        const tabTickables = spineEvents.map(ev => {
-          const isRest = ev.duration.includes("r") || !ev.tones || ev.tones.length === 0;
+        for (const voiceDef of bar.voices) {
+          const spineEvents = [...voiceDef.events].sort((a, b) => a.start - b.start);
+          const tabTickables = spineEvents.map(ev => {
+            const isRest = ev.duration.includes("r") || !ev.tones || ev.tones.length === 0;
 
-          let t;
+            let t;
           if (isRest) {
             t = new Flow.GhostNote({ duration: ev.duration.replace("r", "") });
+            if (ev.dots) applyDotsToNote(t, ev.dots);
           } else {
             const positions = ev.tones.map(p => ({ str: p.string, fret: String(p.fret) }));
             t = new Flow.TabNote({ positions, duration: ev.duration });
@@ -614,27 +667,33 @@
             t.render_options.draw_stem = false;
           }
 
-          if (ev.id) tabNoteById.set(ev.id, t);
-          return t;
-        });
+            if (ev.id) tabNoteById.set(ev.id, t);
+            return t;
+          });
 
-        const tabHasTuplets = spineEvents.some(e => !!e.tupletGroupId);
-        const tabVoice = new Flow.Voice({ num_beats: beats, beat_value: beatValue });
-        tabVoice.setMode(Flow.Voice.Mode.SOFT);
-        tabVoice.addTickables(tabTickables);
-        buildTupletsForVoice(spineEvents, tabTickables, bar.tuplets || []);
+          const tabVoice = new Flow.Voice({ num_beats: beats, beat_value: beatValue });
+          const tabSoft = shouldUseSoftMode(spineEvents, barLen);
+          tabVoice.setMode(tabSoft ? Flow.Voice.Mode.SOFT : Flow.Voice.Mode.FULL);
+          tabVoice.addTickables(tabTickables);
+          tabVoices.push(tabVoice);
+          tabEventsByVoice.push({ voiceId: voiceDef.id, events: spineEvents });
+
+          if (spineEvents.some(e => !!e.tupletGroupId)) {
+            buildTupletsForVoice(spineEvents, tabTickables, bar.tuplets || []);
+          }
+        }
 
         const ties = buildTies(bar.ties, noteById);
         const slurs = buildSlurs(bar.slurs, noteById);
 
         return {
           beats, beatValue, keySig, clef, polyphonic,
-          notationVoices, tabVoice, tabNoteById,
+          notationVoices, tabVoices, tabNoteById,
           beams, tuplets,
           chordAnchors,
           ties, slurs,
           noteById,
-          spineEvents // <– expose for editor nav
+          tabEventsByVoice
         };
       }
 
@@ -648,7 +707,7 @@
       }
 
       function measureBarMinWidth(runtime) {
-        const voices = [...runtime.notationVoices, runtime.tabVoice];
+        const voices = [...runtime.notationVoices, ...(runtime.tabVoices || [])];
         const f = new Flow.Formatter();
         const w = f.preCalculateMinTotalWidth(voices);
         const base = Math.max(MIN_BAR_W, Math.ceil(w + BAR_PAD + BARLINE_PAD_R));
@@ -835,6 +894,9 @@
       function createEventAt(piece, barIndex, voiceIndex, start, baseDuration, dots = 0, explicitRest = false) {
         const refBar = piece.bars[barIndex];
         const barLen = barLengthBeats(refBar, piece);
+        const templateVoice = refBar?.voices?.[voiceIndex] || refBar?.voices?.[0];
+        const templateId = templateVoice?.id || "melody";
+        const templateStem = templateVoice?.stemDirection ?? 1;
         const baseDur = baseDuration.replace("r", "");
         const totalBeats = durationWithDotsBeats(baseDur, dots);
 
@@ -858,6 +920,12 @@
           const parts = durationPartsFromBeats(segment);
 
           for (const part of parts) {
+            const barRef = piece.bars[currentBar];
+            let vi = barRef.voices.findIndex(v => v.id === templateId);
+            if (vi === -1) {
+              barRef.voices.push({ id: templateId, stemDirection: templateStem, events: [] });
+              vi = barRef.voices.length - 1;
+            }
             const id = makeId("n");
             const ev = {
               id,
@@ -866,7 +934,7 @@
               dots: part.dots,
               tones: []
             };
-            piece.bars[currentBar].voices[voiceIndex].events.push(ev);
+            piece.bars[currentBar].voices[vi].events.push(ev);
             if (!firstId) firstId = id;
             if (prevId && !explicitRest) addTie(piece, prevId, id);
             prevId = id;
@@ -881,8 +949,9 @@
         }
 
         piece.bars.forEach(b => {
-          if (b.voices[voiceIndex]) {
-            b.voices[voiceIndex].events.sort((a, b) => a.start - b.start);
+          const vi = b.voices.findIndex(v => v.id === templateId);
+          if (vi >= 0) {
+            b.voices[vi].events.sort((a, b) => a.start - b.start);
           }
         });
 
@@ -1261,6 +1330,9 @@
                 border: 1px solid rgba(0,0,0,.14);
                 box-sizing: border-box;
               }
+              .label { font-size: 11px; opacity: .7; }
+              .tuplet-input { width: 58px; }
+              .tuplet-toggle { display:flex; align-items:center; gap:4px; font-size:11px; opacity:.8; }
               .hint { font-size: 11px; opacity: .7; line-height:1.35; }
               .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; padding: 1px 6px;
                     border:1px solid rgba(0,0,0,.2); border-radius:8px; background:#fff; }
@@ -1284,13 +1356,47 @@
                   <button class="btn toggle" data-action="toggle-reflow">Reflow</button>
                   <button class="btn toggle alt" data-action="toggle-entry">Entry: Linear</button>
                 </div>
+                <div class="row">
+                  <button class="btn toggle" data-action="toggle-voice">Voice: Melody</button>
+                  <button class="btn" data-action="add-bass">Add Bass Voice</button>
+                  <button class="btn" data-action="remove-bass">Remove Bass Voice</button>
+                </div>
+                <div class="row">
+                  <button class="btn toggle" data-action="toggle-debug">Debug: Off</button>
+                </div>
+
+                <div class="row">
+                  <span class="label">Tuplet</span>
+                  <input class="tuplet-input" type="number" min="2" value="3" data-tuplet="num" />
+                  <span class="label">in</span>
+                  <input class="tuplet-input" type="number" min="1" value="2" data-tuplet="occ" />
+                  <label class="tuplet-toggle">
+                    <input type="checkbox" data-tuplet="ratio" checked />
+                    ratio
+                  </label>
+                  <label class="tuplet-toggle">
+                    <input type="checkbox" data-tuplet="bracket" />
+                    bracket
+                  </label>
+                </div>
+                <div class="row">
+                  <button class="btn wide" data-action="apply-tuplet">Apply Tuplet</button>
+                  <button class="btn wide" data-action="clear-tuplet">Clear Tuplet</button>
+                </div>
 
                 <div class="row">
                   <button class="btn" data-action="tech-h">H</button>
                   <button class="btn" data-action="tech-p">P</button>
                   <button class="btn" data-action="tech-slide">??-</button>
+                  <button class="btn" data-action="tech-slide-in">slide in</button>
                   <button class="btn" data-action="tech-bend">bend</button>
                   <button class="btn wide" data-action="clear-tech">clear tech</button>
+                </div>
+                <div class="row">
+                  <button class="btn" data-action="slur-range">Slur</button>
+                  <button class="btn" data-action="tie-range">Tie</button>
+                  <button class="btn wide" data-action="clear-slur">Clear Slur</button>
+                  <button class="btn wide" data-action="clear-tie">Clear Tie</button>
                 </div>
 
                 <div class="row">
@@ -1343,6 +1449,8 @@
           this.reflowEnabled = false;
           this.entryMode = "linear"; // linear | chord
           this.activeDuration = { dur: "q", dots: 0 };
+          this.debugEnabled = false;
+          this._debugLogKey = null;
           this._dirty = false;
           this._resizeHandler = () => {
             const next = this.getSystemWidth();
@@ -1356,6 +1464,7 @@
           this.sel = {
             eventId: null,
             stringIndex: 0, // 0..5 corresponds to string 1..6
+            voiceId: "melody",
             anchorId: null,
             rangeIds: [],
             rangeStringIndex: 0
@@ -1432,28 +1541,36 @@
 
         loadPiece(piece) {
           this.piece = piece;
-          const first = this.piece?.bars?.[0]?.voices?.[0]?.events?.[0]?.id || null;
-          this.setSingleSelection(first, 0);
+          const firstVoice = this.piece?.bars?.[0]?.voices?.[0];
+          const first = firstVoice?.events?.[0]?.id || null;
+          const voiceId = firstVoice?.id || "melody";
+          this.setSingleSelection(first, 0, voiceId);
           this.updateActiveDurationFromSelection();
           this.markDirty();
           this.renderScore(() => this.syncInspectorFields());
           this.updateJsonTextarea();
         }
         
-        setSingleSelection(eventId, stringIndex = this.sel.stringIndex) {
+        setSingleSelection(eventId, stringIndex = this.sel.stringIndex, voiceId = this.sel.voiceId) {
           this.sel.eventId = eventId;
           this.sel.stringIndex = stringIndex;
+          if (!voiceId && eventId) {
+            const ref = findEventRef(this.piece, eventId);
+            voiceId = ref?.voice?.id || voiceId;
+          }
+          this.sel.voiceId = voiceId || this.sel.voiceId;
           this.sel.anchorId = eventId;
           this.sel.rangeIds = eventId ? [eventId] : [];
           this.sel.rangeStringIndex = stringIndex;
         }
 
-        selectRange(startId, endId, stringIndex = this.sel.stringIndex) {
+        selectRange(startId, endId, stringIndex = this.sel.stringIndex, voiceId = this.sel.voiceId) {
           if (!startId || !endId) {
-            this.setSingleSelection(endId, stringIndex);
+            this.setSingleSelection(endId, stringIndex, voiceId);
             return;
           }
           const ordered = [...this._hitIndex]
+            .filter(h => h.voiceId === voiceId)
             .sort((a, b) => (a.x - b.x) || (a.y - b.y));
           const orderedIds = [];
           for (const h of ordered) {
@@ -1462,7 +1579,7 @@
           const a = orderedIds.indexOf(startId);
           const b = orderedIds.indexOf(endId);
           if (a === -1 || b === -1) {
-            this.setSingleSelection(endId, stringIndex);
+            this.setSingleSelection(endId, stringIndex, voiceId);
             return;
           }
           const lo = Math.min(a, b);
@@ -1472,6 +1589,7 @@
           this.sel.eventId = endId;
           this.sel.stringIndex = stringIndex;
           this.sel.rangeStringIndex = stringIndex;
+          this.sel.voiceId = voiceId;
         }
 
         exportJsonFile() {
@@ -1513,6 +1631,301 @@
           } catch {
             // ignore invalid JSON
           }
+        }
+
+        getSelectedEventIds() {
+          if (this.sel.rangeIds && this.sel.rangeIds.length) return this.sel.rangeIds;
+          return this.sel.eventId ? [this.sel.eventId] : [];
+        }
+
+        getCurrentBarIndex() {
+          const ref = findEventRef(this.piece, this.sel.eventId);
+          return ref ? ref.bi : 0;
+        }
+
+        findVoiceIndex(bar, voiceId) {
+          return bar?.voices?.findIndex(v => v.id === voiceId) ?? -1;
+        }
+
+        ensureVoiceInBar(voiceId, { stemDirection = 1 } = {}) {
+          const next = clone(this.piece);
+          const bi = this.getCurrentBarIndex();
+          const bar = next.bars?.[bi];
+          if (!bar) return this.piece;
+          bar.voices ||= [];
+
+          if (this.findVoiceIndex(bar, voiceId) !== -1) return next;
+
+          const barLen = barLengthBeats(bar, next);
+          const events = formatRests(barLen, 0, bar, false);
+          bar.voices.push({ id: voiceId, stemDirection, events });
+          return next;
+        }
+
+        ensureVoiceInBarAt(barIndex, voiceId, { stemDirection = 1 } = {}) {
+          const next = clone(this.piece);
+          const bar = next.bars?.[barIndex];
+          if (!bar) return { piece: this.piece, voiceIndex: -1 };
+          bar.voices ||= [];
+          let vi = this.findVoiceIndex(bar, voiceId);
+          if (vi !== -1) return { piece: next, voiceIndex: vi };
+
+          const barLen = barLengthBeats(bar, next);
+          const events = formatRests(barLen, 0, bar, false);
+          bar.voices.push({ id: voiceId, stemDirection, events });
+          vi = bar.voices.length - 1;
+          return { piece: next, voiceIndex: vi };
+        }
+
+        removeVoiceFromBar(voiceId) {
+          const next = clone(this.piece);
+          const bi = this.getCurrentBarIndex();
+          const bar = next.bars?.[bi];
+          if (!bar) return this.piece;
+          bar.voices = (bar.voices || []).filter(v => v.id !== voiceId);
+          return next;
+        }
+
+        selectFirstEventInVoice(voiceId) {
+          const bi = this.getCurrentBarIndex();
+          const bar = this.piece?.bars?.[bi];
+          const vi = this.findVoiceIndex(bar, voiceId);
+          const ev = vi >= 0 ? bar.voices[vi].events[0] : null;
+          if (ev?.id) this.setSingleSelection(ev.id, this.sel.stringIndex, voiceId);
+        }
+
+        getAdjacentPairFromSelection() {
+          const ids = this.getSelectedEventIds();
+          if (!ids.length) return null;
+
+          if (ids.length === 1) {
+            const from = this.sel.eventId;
+            const ordered = [...this._hitIndex]
+              .filter(h => h.stringIndex === this.sel.stringIndex && h.voiceId === this.sel.voiceId)
+              .sort((a,b)=> (a.x-b.x) || (a.y-b.y));
+            const i = ordered.findIndex(h => h.eventId === from);
+            const to = ordered[Math.min(ordered.length - 1, i + 1)]?.eventId;
+            if (!to || to === from) return null;
+            return { fromId: from, toId: to };
+          }
+
+          if (ids.length !== 2) return null;
+          const a = findEventRef(this.piece, ids[0]);
+          const b = findEventRef(this.piece, ids[1]);
+          if (!a || !b) return null;
+          if (a.bi !== b.bi || a.vi !== b.vi) return null;
+
+          const voice = a.bar.voices[a.vi];
+          const ordered = voice.events
+            .map((ev, ei) => ({ ev, ei }))
+            .sort((x, y) => (x.ev.start - y.ev.start) || (x.ei - y.ei));
+          const ia = ordered.findIndex(o => o.ev.id === ids[0]);
+          const ib = ordered.findIndex(o => o.ev.id === ids[1]);
+          if (ia === -1 || ib === -1) return null;
+          if (Math.abs(ia - ib) !== 1) return null;
+          const fromId = ia < ib ? ids[0] : ids[1];
+          const toId = ia < ib ? ids[1] : ids[0];
+          return { fromId, toId };
+        }
+
+        addSlurFromSelection() {
+          const ids = this.getSelectedEventIds();
+          if (ids.length < 2) return;
+          const fromId = ids[0];
+          const toId = ids[ids.length - 1];
+          const next = clone(this.piece);
+          const fromRef = findEventRef(next, fromId);
+          const toRef = findEventRef(next, toId);
+          if (!fromRef || !toRef) return;
+          if (fromRef.bi !== toRef.bi) {
+            alert("Slurs must be within the same bar.");
+            return;
+          }
+          const bar = next.bars[fromRef.bi];
+          bar.slurs ||= [];
+          if (!bar.slurs.some(s => s.from === fromId && s.to === toId)) {
+            bar.slurs.push({ from: fromId, to: toId });
+          }
+          this.piece = next;
+          this.markDirty();
+          this.renderScore(() => this.refreshOverlaySelection());
+        }
+
+        addTieFromSelection() {
+          const ids = this.getSelectedEventIds();
+          if (ids.length < 2) return;
+          const fromId = ids[0];
+          const toId = ids[ids.length - 1];
+          const next = clone(this.piece);
+          const fromRef = findEventRef(next, fromId);
+          const toRef = findEventRef(next, toId);
+          if (!fromRef || !toRef) return;
+          const bar = next.bars[fromRef.bi];
+          bar.ties ||= [];
+          if (!bar.ties.some(t => t.from === fromId && t.to === toId)) {
+            bar.ties.push({ from: fromId, to: toId });
+          }
+          this.piece = next;
+          this.markDirty();
+          this.renderScore(() => this.refreshOverlaySelection());
+        }
+
+        clearSlurFromSelection() {
+          const ids = this.getSelectedEventIds();
+          if (!ids.length) return;
+          const idSet = new Set(ids);
+          const next = clone(this.piece);
+          next.bars.forEach(b => {
+            if (!b.slurs) return;
+            b.slurs = b.slurs.filter(s => !(idSet.has(s.from) || idSet.has(s.to)));
+          });
+          this.piece = next;
+          this.markDirty();
+          this.renderScore(() => this.refreshOverlaySelection());
+        }
+
+        clearTieFromSelection() {
+          const ids = this.getSelectedEventIds();
+          if (!ids.length) return;
+          const idSet = new Set(ids);
+          const next = clone(this.piece);
+          next.bars.forEach(b => {
+            if (!b.ties) return;
+            b.ties = b.ties.filter(t => !(idSet.has(t.from) || idSet.has(t.to)));
+          });
+          this.piece = next;
+          this.markDirty();
+          this.renderScore(() => this.refreshOverlaySelection());
+        }
+
+        applyTupletFromSelection() {
+          const ids = this.getSelectedEventIds();
+          if (ids.length < 2) return;
+
+          const numInput = this.shadowRoot.querySelector('[data-tuplet="num"]');
+          const occInput = this.shadowRoot.querySelector('[data-tuplet="occ"]');
+          const ratioInput = this.shadowRoot.querySelector('[data-tuplet="ratio"]');
+          const bracketInput = this.shadowRoot.querySelector('[data-tuplet="bracket"]');
+
+          const numNotes = parseInt(numInput?.value || "0", 10);
+          const notesOccupied = parseInt(occInput?.value || "0", 10);
+          if (!Number.isFinite(numNotes) || !Number.isFinite(notesOccupied) || numNotes < 2 || notesOccupied < 1) {
+            alert("Tuplet values must be numbers like 3 in 2.");
+            return;
+          }
+
+          const next = clone(this.piece);
+          const refs = ids.map(id => findEventRef(next, id)).filter(Boolean);
+          if (refs.length < 2) return;
+          const { bi, vi } = refs[0];
+          if (!refs.every(r => r.bi === bi && r.vi === vi)) {
+            alert("Tuplet ranges must be within the same bar.");
+            return;
+          }
+
+          const bar = next.bars[bi];
+          bar.tuplets ||= [];
+          let tid;
+          do { tid = makeId("t"); } while (bar.tuplets.some(t => t.id === tid));
+
+          const voice = bar.voices[vi];
+          const selectedIds = new Set(ids);
+          const selectedRefs = voice.events
+            .map((ev, ei) => ({ ev, ei }))
+            .filter(r => selectedIds.has(r.ev.id))
+            .sort((a, b) => (a.ev.start - b.ev.start) || (a.ei - b.ei));
+
+          const startAt = selectedRefs[0].ev.start;
+          const lastRef = selectedRefs[selectedRefs.length - 1];
+          const lastDur = durationWithDotsBeats(lastRef.ev.duration.replace("r", ""), lastRef.ev.dots || 0);
+          const lastEnd = lastRef.ev.start + lastDur;
+          const hasInterlopers = voice.events.some(ev =>
+            !selectedIds.has(ev.id) && ev.start >= startAt && ev.start < lastEnd
+          );
+          if (hasInterlopers) {
+            alert("Tuplet ranges must be contiguous.");
+            return;
+          }
+
+          const factor = notesOccupied / numNotes;
+          const roundBeat = (v) => Math.round(v * 100000) / 100000;
+          let cursor = startAt;
+          selectedRefs.forEach(r => {
+            const baseDur = durationWithDotsBeats(r.ev.duration.replace("r", ""), r.ev.dots || 0);
+            r.ev.start = roundBeat(cursor);
+            r.ev.tupletGroupId = tid;
+            cursor += baseDur * factor;
+          });
+
+          const originalSpan = lastEnd - startAt;
+          const newSpan = cursor - startAt;
+          const delta = newSpan - originalSpan;
+          if (delta !== 0) {
+            voice.events.forEach(ev => {
+              if (selectedIds.has(ev.id)) return;
+              if (ev.start >= lastEnd) {
+                ev.start = roundBeat(ev.start + delta);
+              }
+            });
+          }
+
+          bar.tuplets.push({
+            id: tid,
+            numNotes,
+            notesOccupied,
+            ratioed: !!(ratioInput && ratioInput.checked),
+            bracketed: !!(bracketInput && bracketInput.checked)
+          });
+
+          // remove tuplets no longer referenced in this bar
+          const used = new Set();
+          bar.voices.forEach(v => v.events.forEach(e => {
+            if (e.tupletGroupId) used.add(e.tupletGroupId);
+          }));
+          bar.tuplets = bar.tuplets.filter(t => used.has(t.id));
+
+          this.piece = next;
+          this.markDirty();
+          const stringIndex = this.sel.rangeStringIndex ?? this.sel.stringIndex;
+          const lastSelectedId = selectedRefs[selectedRefs.length - 1].ev.id;
+          this.renderScore(() => {
+            this.setSingleSelection(lastSelectedId, stringIndex);
+            const startId = this.getTieChainEndId(this.sel.eventId) || this.sel.eventId;
+            const { nextId } = this.ensureNextSlotFrom(startId);
+            if (nextId) this.setSingleSelection(nextId, stringIndex);
+            this.refreshOverlaySelection();
+          });
+        }
+
+        clearTupletFromSelection() {
+          const ids = this.getSelectedEventIds();
+          if (!ids.length) return;
+
+          const next = clone(this.piece);
+          const refs = ids.map(id => findEventRef(next, id)).filter(Boolean);
+          if (!refs.length) return;
+          const { bi, vi } = refs[0];
+          if (!refs.every(r => r.bi === bi && r.vi === vi)) {
+            alert("Tuplet ranges must be within the same bar.");
+            return;
+          }
+
+          refs.forEach(r => {
+            delete r.ev.tupletGroupId;
+          });
+
+          const bar = next.bars[bi];
+          if (bar && bar.tuplets) {
+            const used = new Set();
+            bar.voices.forEach(v => v.events.forEach(e => {
+              if (e.tupletGroupId) used.add(e.tupletGroupId);
+            }));
+            bar.tuplets = bar.tuplets.filter(t => used.has(t.id));
+          }
+
+          this.piece = next;
+          this.markDirty();
+          this.renderScore(() => this.refreshOverlaySelection());
         }
 
         onJsonFileChange(e) {
@@ -1663,7 +2076,7 @@
 
           // order by x, then y (so row order is stable)
           const ordered = [...this._hitIndex]
-            .filter(h => h.stringIndex === this.sel.stringIndex)
+            .filter(h => h.stringIndex === this.sel.stringIndex && h.voiceId === this.sel.voiceId)
             .sort((a,b)=> (a.x-b.x) || (a.y-b.y));
 
           const i = ordered.findIndex(h => h.eventId === this.sel.eventId);
@@ -1675,14 +2088,14 @@
             if (ni < 0) ni = 0;
             if (ni >= ordered.length) ni = ordered.length - 1;
           }
-            this.setSingleSelection(ordered[ni].eventId);
+            this.setSingleSelection(ordered[ni].eventId, this.sel.stringIndex, this.sel.voiceId);
           this.refreshOverlaySelection();
           this.syncInspectorFields();
         }
 
         ensureNextSlotFrom(eventId) {
           const ordered = [...this._hitIndex]
-            .filter(h => h.stringIndex === this.sel.stringIndex)
+            .filter(h => h.stringIndex === this.sel.stringIndex && h.voiceId === this.sel.voiceId)
             .sort((a,b)=> (a.x-b.x) || (a.y-b.y));
 
           const i = ordered.findIndex(h => h.eventId === eventId);
@@ -1732,7 +2145,10 @@
           const dur = this.activeDuration.dur;
           const dots = this.activeDuration.dots || 0;
           const duration = this.restMode ? `${dur}r` : dur;
-          const res = createEventAt(this.piece, barIndex, ref.vi, expectedStart, duration, dots, this.restMode);
+          const ensured = this.ensureVoiceInBarAt(barIndex, ref.voice.id, { stemDirection: ref.voice.stemDirection });
+          this.piece = ensured.piece;
+          const voiceIndex = ensured.voiceIndex === -1 ? ref.vi : ensured.voiceIndex;
+          const res = createEventAt(this.piece, barIndex, voiceIndex, expectedStart, duration, dots, this.restMode);
           const keepId = res.newEventId || eventId;
           this.piece = normalizeVoiceForEvent(res.piece, keepId, { reflow: this.reflowEnabled });
           this.markDirty();
@@ -1788,45 +2204,86 @@
             return;
           }
 
+          if (action === "apply-tuplet") {
+            this.applyTupletFromSelection();
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "clear-tuplet") {
+            this.clearTupletFromSelection();
+            this.wrap.focus();
+            return;
+          }
+
           // Techniques: kept intentionally simple (single-note or adjacent-note)
-          if (action === "tech-bend") {
-            this.piece = addTechnique(this.piece, "bend", { on: this.sel.eventId, amount: "1/2", index: 0 });
-            this.markDirty();
-            this.renderScore();
+            if (action === "tech-bend") {
+              this.piece = addTechnique(this.piece, "bend", { on: this.sel.eventId, amount: "1/2", index: 0 });
+              this.markDirty();
+              this.renderScore();
+              this.wrap.focus();
+              return;
+            }
+
+            if (action === "clear-tech") {
+              const ids = this.getSelectedEventIds();
+              const idSet = new Set(ids);
+              this.piece = removeTechnique(this.piece, t =>
+                idSet.has(t.on) || idSet.has(t.from) || idSet.has(t.to)
+              );
+              this.markDirty();
+              this.renderScore();
+              this.wrap.focus();
+              return;
+            }
+
+          if (action === "slur-range") {
+            this.addSlurFromSelection();
             this.wrap.focus();
             return;
           }
 
-          if (action === "clear-tech") {
-            const id = this.sel.eventId;
-            this.piece = removeTechnique(this.piece, t =>
-              t.on === id || t.from === id || t.to === id
-            );
-            this.markDirty();
-            this.renderScore();
+          if (action === "tie-range") {
+            this.addTieFromSelection();
             this.wrap.focus();
             return;
           }
 
-          // H/P/Slide need a “from/to”: use current and next note (same stringIndex best-effort)
-          if (action === "tech-h" || action === "tech-p" || action === "tech-slide") {
-            const from = this.sel.eventId;
-
-            // find next by x on same stringIndex
-            const ordered = [...this._hitIndex]
-              .filter(h => h.stringIndex === this.sel.stringIndex)
-              .sort((a,b)=> (a.x-b.x) || (a.y-b.y));
-            const i = ordered.findIndex(h => h.eventId === from);
-            const to = ordered[Math.min(ordered.length - 1, i + 1)]?.eventId;
-            if (!to || to === from) return;
-
-            const type = action === "tech-h" ? "hammer" : action === "tech-p" ? "pull" : "slide";
-            this.piece = addTechnique(this.piece, type, { from, to, fromIndex: 0, toIndex: 0 });
-            this.markDirty();
-            this.renderScore();
+          if (action === "clear-slur") {
+            this.clearSlurFromSelection();
             this.wrap.focus();
             return;
           }
+
+          if (action === "clear-tie") {
+            this.clearTieFromSelection();
+            this.wrap.focus();
+            return;
+          }
+
+            if (action === "tech-slide-in") {
+              this.piece = addTechnique(this.piece, "slide-in", { on: this.sel.eventId, index: 0 });
+              this.markDirty();
+              this.renderScore();
+              this.wrap.focus();
+              return;
+            }
+
+            // H/P/Slide need adjacent “from/to”
+            if (action === "tech-h" || action === "tech-p" || action === "tech-slide") {
+              const pair = this.getAdjacentPairFromSelection();
+              if (!pair) {
+                alert("Select two adjacent notes for this technique.");
+                return;
+              }
+
+              const type = action === "tech-h" ? "hammer" : action === "tech-p" ? "pull" : "slide";
+              this.piece = addTechnique(this.piece, type, { from: pair.fromId, to: pair.toId, fromIndex: 0, toIndex: 0 });
+              this.markDirty();
+              this.renderScore();
+              this.wrap.focus();
+              return;
+            }
 
           if (action === "toggle-rest") {
             this.restMode = !this.restMode;
@@ -1845,6 +2302,52 @@
           if (action === "toggle-entry") {
             this.entryMode = this.entryMode === "linear" ? "chord" : "linear";
             this.syncToggleButtons();
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "toggle-debug") {
+            this.debugEnabled = !this.debugEnabled;
+            this.syncToggleButtons();
+            this.renderScore();
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "toggle-voice") {
+            const target = this.sel.voiceId === "bass" ? "melody" : "bass";
+            if (target === "bass") {
+              this.piece = this.ensureVoiceInBar("bass", { stemDirection: -1 });
+            }
+            this.selectFirstEventInVoice(target);
+            this._fretBuffer = "";
+            clearTimeout(this._fretBufferTimer);
+            this.markDirty();
+            this.renderScore(() => this.syncInspectorFields());
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "add-bass") {
+            this.piece = this.ensureVoiceInBar("bass", { stemDirection: -1 });
+            this.selectFirstEventInVoice("bass");
+            this._fretBuffer = "";
+            clearTimeout(this._fretBufferTimer);
+            this.markDirty();
+            this.renderScore(() => this.syncInspectorFields());
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "remove-bass") {
+            this.piece = this.removeVoiceFromBar("bass");
+            if (this.sel.voiceId === "bass") {
+              this.selectFirstEventInVoice("melody");
+            }
+            this._fretBuffer = "";
+            clearTimeout(this._fretBufferTimer);
+            this.markDirty();
+            this.renderScore(() => this.syncInspectorFields());
             this.wrap.focus();
             return;
           }
@@ -1904,11 +2407,22 @@
           const restBtn = this.shadowRoot.querySelector('[data-action="toggle-rest"]');
           const reflowBtn = this.shadowRoot.querySelector('[data-action="toggle-reflow"]');
           const entryBtn = this.shadowRoot.querySelector('[data-action="toggle-entry"]');
+          const voiceBtn = this.shadowRoot.querySelector('[data-action="toggle-voice"]');
           if (restBtn) restBtn.classList.toggle("on", this.restMode);
           if (reflowBtn) reflowBtn.classList.toggle("on", this.reflowEnabled);
           if (entryBtn) {
             entryBtn.classList.toggle("on", this.entryMode === "linear");
             entryBtn.textContent = `Entry: ${this.entryMode === "linear" ? "Linear" : "Chord"}`;
+          }
+          if (voiceBtn) {
+            const label = this.sel.voiceId === "bass" ? "Bass" : "Melody";
+            voiceBtn.classList.toggle("on", this.sel.voiceId === "bass");
+            voiceBtn.textContent = `Voice: ${label}`;
+          }
+          const debugBtn = this.shadowRoot.querySelector('[data-action="toggle-debug"]');
+          if (debugBtn) {
+            debugBtn.classList.toggle("on", this.debugEnabled);
+            debugBtn.textContent = `Debug: ${this.debugEnabled ? "On" : "Off"}`;
           }
         }
 
@@ -1939,17 +2453,23 @@
         refreshOverlaySelection() {
           // update selected class on hits
           this.shadowRoot.querySelectorAll(".hit").forEach(el => {
-            const isPrimary = el.dataset.eventId === this.sel.eventId
+            const sameVoice = el.dataset.voiceId === (this.sel.voiceId || "melody");
+            const isPrimary = sameVoice
+              && el.dataset.eventId === this.sel.eventId
               && Number(el.dataset.stringIndex) === this.sel.stringIndex;
-            const isRange = this.sel.rangeIds
+            const isRange = sameVoice
+              && this.sel.rangeIds
               && this.sel.rangeIds.includes(el.dataset.eventId)
               && Number(el.dataset.stringIndex) === this.sel.rangeStringIndex;
             el.classList.toggle("selected", isPrimary || isRange);
           });
 
           // caret
-          const hit = this._hitIndex.find(h => h.eventId === this.sel.eventId && h.stringIndex === this.sel.stringIndex)
-            || this._hitIndex.find(h => h.eventId === this.sel.eventId);
+          const hit = this._hitIndex.find(h =>
+            h.eventId === this.sel.eventId
+            && h.stringIndex === this.sel.stringIndex
+            && h.voiceId === this.sel.voiceId
+          ) || this._hitIndex.find(h => h.eventId === this.sel.eventId && h.voiceId === this.sel.voiceId);
           if (hit) {
             this.caretEl.hidden = false;
             this.caretEl.style.left = `${hit.x}px`;
@@ -1975,14 +2495,15 @@
             div.style.top = `${h.y}px`;
             div.dataset.eventId = h.eventId;
             div.dataset.stringIndex = String(h.stringIndex);
+            div.dataset.voiceId = h.voiceId;
 
             div.addEventListener("mousedown", (ev) => {
               ev.preventDefault();
               if (ev.shiftKey) {
                 const anchor = this.sel.anchorId || this.sel.eventId || h.eventId;
-                this.selectRange(anchor, h.eventId, h.stringIndex);
+                this.selectRange(anchor, h.eventId, h.stringIndex, h.voiceId);
               } else {
-                this.setSingleSelection(h.eventId, h.stringIndex);
+                this.setSingleSelection(h.eventId, h.stringIndex, h.voiceId);
               }
               this._fretBuffer = "";
               clearTimeout(this._fretBufferTimer);
@@ -2125,17 +2646,44 @@
               const leftInset = stave.getNoteStartX() - stave.getX();
               const available = Math.max(40, barW - leftInset - BARLINE_PAD_R);
 
+              rt.notationVoices.forEach(v => v.setStave(stave));
+              (rt.tabVoices || []).forEach(v => v.setStave(tabStave));
+
+              const hasTuplets = bar.voices.some(v => v.events.some(e => e.tupletGroupId));
+              const gridStep = hasTuplets ? null : computeGridStep(bar);
+              const gridDur = gridStep ? durationForBeats(gridStep) : null;
+              let gridVoice = null;
+              if (gridDur) {
+                const gridNotes = [];
+                const [beats, beatValue] = barTimeSig;
+                const barLen = beats * (4 / beatValue);
+                const count = Math.max(1, Math.round(barLen / gridStep));
+                for (let i = 0; i < count; i++) {
+                  gridNotes.push(new Flow.GhostNote({ duration: gridDur }));
+                }
+                gridVoice = new Flow.Voice({ num_beats: beats, beat_value: beatValue });
+                gridVoice.setMode(Flow.Voice.Mode.FULL);
+                gridVoice.addTickables(gridNotes);
+              }
+
+              const allVoices = [
+                ...rt.notationVoices,
+                ...(rt.tabVoices || []),
+                ...(gridVoice ? [gridVoice] : [])
+              ];
               const formatter = new Flow.Formatter();
-              formatter.joinVoices(rt.notationVoices);
-              formatter.joinVoices([rt.tabVoice]);
-              formatter.format([...rt.notationVoices, rt.tabVoice], available);
+              if (typeof formatter.setSoftmaxFactor === "function") {
+                formatter.setSoftmaxFactor(0);
+              }
+              formatter.joinVoices(allVoices);
+              formatter.format(allVoices, available);
 
               // draw
               rt.notationVoices.forEach(v => v.draw(context, stave));
               rt.beams.forEach(b => b.setContext(context).draw());
               rt.tuplets.forEach(t => t.setContext(context).draw());
               rt.slurs.forEach(s => s.setContext(context).draw());
-              rt.tabVoice.draw(context, tabStave);
+              (rt.tabVoices || []).forEach(v => v.draw(context, tabStave));
 
               drawGuitarTechniques({
                 context,
@@ -2144,25 +2692,93 @@
                 tabNoteById: rt.tabNoteById
               });
 
+              if (this.debugEnabled) {
+                const yTop = stave.getY() - 10;
+                const yBottom = tabStave.getY() + tabStave.getHeight() + 10;
+                context.save();
+                context.setLineWidth(1);
+                context.setStrokeStyle("rgba(200,0,0,0.35)");
+                rt.notationVoices.forEach(v => {
+                  (v.getTickables() || []).forEach(t => {
+                    const xAbs = t.getAbsoluteX ? t.getAbsoluteX() : null;
+                    if (typeof xAbs !== "number") return;
+                    context.beginPath();
+                    context.moveTo(xAbs, yTop);
+                    context.lineTo(xAbs, yBottom);
+                    context.stroke();
+                  });
+                });
+                context.setStrokeStyle("rgba(0,100,200,0.35)");
+                (rt.tabVoices || []).forEach(v => {
+                  (v.getTickables() || []).forEach(t => {
+                    const xAbs = t.getAbsoluteX ? t.getAbsoluteX() : null;
+                    if (typeof xAbs !== "number") return;
+                    context.beginPath();
+                    context.moveTo(xAbs, yTop);
+                    context.lineTo(xAbs, yBottom);
+                    context.stroke();
+                  });
+                });
+                context.restore();
+
+                const currentBi = this.getCurrentBarIndex();
+                if (bi === currentBi) {
+                  const logKey = `${bi}:${bars[bi]?.voices?.length || 0}:${this.sel.eventId || ""}`;
+                  if (this._debugLogKey !== logKey) {
+                    this._debugLogKey = logKey;
+                    const rows = [];
+                    bars[bi].voices.forEach((v) => {
+                      v.events.forEach((ev) => {
+                        const note = rt.noteById.get(ev.id);
+                        const tabNote = rt.tabNoteById.get(ev.id);
+                        const noteX = note && note.getAbsoluteX ? note.getAbsoluteX() : null;
+                        const tabX = tabNote && tabNote.getAbsoluteX ? tabNote.getAbsoluteX() : null;
+                        const tickCtx = note && note.getTickContext ? note.getTickContext() : null;
+                        const tickX = tickCtx && tickCtx.getX ? tickCtx.getX() : null;
+                        const width = note && note.getWidth ? note.getWidth() : null;
+                        const ticks = note && note.getTicks && note.getTicks().value ? note.getTicks().value() : null;
+                        rows.push({
+                          voice: v.id,
+                          id: ev.id,
+                          start: ev.start,
+                          duration: ev.duration,
+                          dots: ev.dots || 0,
+                          noteX,
+                          tabX,
+                          tickX,
+                          width,
+                          ticks
+                        });
+                      });
+                    });
+                    console.group(`debug bar ${bi}`);
+                    console.table(rows);
+                    console.groupEnd();
+                  }
+                }
+              }
+
               rt.noteById.forEach((val, key) => globalNoteById.set(key, val));
 
               rowChordAnchors.push(...rt.chordAnchors);
 
               // ---- build overlay “hit targets” for each sounding tab position ----
               // We anchor to each string line (1..6). If the event doesn’t have that string, still allow selecting it.
-              const spine = rt.spineEvents;
-              spine.forEach(ev => {
-                if (isHiddenRestFiller(ev)) return;
-                if (!ev.id) return;
-                const tabNote = rt.tabNoteById.get(ev.id);
-                if (!tabNote) return;
+              const spines = rt.tabEventsByVoice || [];
+              spines.forEach(spine => {
+                spine.events.forEach(ev => {
+                  if (isHiddenRestFiller(ev)) return;
+                  if (!ev.id) return;
+                  const tabNote = rt.tabNoteById.get(ev.id);
+                  if (!tabNote) return;
 
-                for (let stringIndex = 0; stringIndex < 6; stringIndex++) {
-                  // place hit at this note’s X and the corresponding string line Y
-                  const xAbs = tabNote.getAbsoluteX();
-                  const yAbs = tabYForString(tabStave, stringIndex + 1);
-                  overlayHits.push({ eventId: ev.id, stringIndex, x: xAbs, y: yAbs });
-                }
+                  for (let stringIndex = 0; stringIndex < 6; stringIndex++) {
+                    // place hit at this note’s X and the corresponding string line Y
+                    const xAbs = tabNote.getAbsoluteX();
+                    const yAbs = tabYForString(tabStave, stringIndex + 1);
+                    overlayHits.push({ eventId: ev.id, stringIndex, voiceId: spine.voiceId, x: xAbs, y: yAbs });
+                  }
+                });
               });
 
               x += barW;
