@@ -446,3 +446,127 @@ test("bass voice overflows into next bar", async ({ page }) => {
   expect(bar0Notes.length).toBe(4);
   expect(bar1Notes.length).toBe(1);
 });
+
+test("delete range across bars", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+
+  const enterFret = async (digit) => {
+    await page.keyboard.type(String(digit));
+    await page.waitForTimeout(600);
+  };
+
+  for (let i = 0; i < 5; i++) {
+    await enterFret(5);
+  }
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const bar0 = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const bar1 = parsed.bars[1].voices[0].events.filter(e => !e.duration.includes("r"));
+
+  const firstId = bar0[0].id;
+  const lastId = bar1[0].id;
+
+  const firstHit = page.locator(`jg-score-view .hit[data-event-id="${firstId}"][data-string-index="0"]`);
+  const lastHit = page.locator(`jg-score-view .hit[data-event-id="${lastId}"][data-string-index="0"]`);
+  await firstHit.click();
+  await lastHit.click({ modifiers: ["Shift"] });
+
+  await page.locator('jg-score-view [data-action="delete-range"]').click();
+
+  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed2 = JSON.parse(jsonText2);
+  const bar0After = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const bar1After = parsed2.bars[1].voices[0].events.filter(e => !e.duration.includes("r"));
+  expect(bar0After.length).toBe(0);
+  expect(bar1After.length).toBe(0);
+});
+
+test("copy/paste range preserves relative timing", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+
+  const enterFret = async (digit) => {
+    await page.keyboard.type(String(digit));
+    await page.waitForTimeout(600);
+  };
+
+  for (let i = 0; i < 4; i++) {
+    await enterFret(5);
+  }
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const ids = events.map(e => e.id);
+
+  const firstHit = page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`);
+  const secondHit = page.locator(`jg-score-view .hit[data-event-id="${ids[1]}"][data-string-index="0"]`);
+  await firstHit.click();
+  await secondHit.click({ modifiers: ["Shift"] });
+
+  await page.locator('jg-score-view [data-action="copy-range"]').click();
+
+  const thirdHit = page.locator(`jg-score-view .hit[data-event-id="${ids[2]}"][data-string-index="0"]`);
+  await thirdHit.click();
+  await page.locator('jg-score-view [data-action="paste-range"]').click();
+
+  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed2 = JSON.parse(jsonText2);
+  const events2 = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const starts = events2.map(e => e.start).sort((a, b) => a - b);
+
+  expect(starts.filter(s => s === 2).length).toBeGreaterThan(0);
+  expect(starts.filter(s => s === 3).length).toBeGreaterThan(0);
+});
+
+test("cut range removes notes and preserves clipboard", async ({ page }) => {
+  await page.goto("/");
+
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+
+  const enterFret = async (digit) => {
+    await page.keyboard.type(String(digit));
+    await page.waitForTimeout(600);
+  };
+
+  for (let i = 0; i < 4; i++) {
+    await enterFret(5);
+  }
+
+  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed = JSON.parse(jsonText);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const ids = events.map(e => e.id);
+
+  const firstHit = page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`);
+  const secondHit = page.locator(`jg-score-view .hit[data-event-id="${ids[1]}"][data-string-index="0"]`);
+  await firstHit.click();
+  await secondHit.click({ modifiers: ["Shift"] });
+
+  await page.locator('jg-score-view [data-action="cut-range"]').click();
+
+  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed2 = JSON.parse(jsonText2);
+  const events2 = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  expect(events2.length).toBe(2);
+
+  await page.locator('jg-score-view [data-action="toggle-paste"]').click();
+  const thirdHit = page.locator(`jg-score-view .hit[data-event-id="${events2[0].id}"][data-string-index="0"]`);
+  await thirdHit.click();
+  await page.locator('jg-score-view [data-action="paste-range"]').click();
+
+  const jsonText3 = await page.locator("jg-score-view .json-io").inputValue();
+  const parsed3 = JSON.parse(jsonText3);
+  const events3 = parsed3.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  expect(events3.length).toBeGreaterThanOrEqual(3);
+});

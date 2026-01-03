@@ -1398,6 +1398,13 @@
                   <button class="btn wide" data-action="clear-slur">Clear Slur</button>
                   <button class="btn wide" data-action="clear-tie">Clear Tie</button>
                 </div>
+                <div class="row">
+                  <button class="btn" data-action="copy-range">Copy</button>
+                  <button class="btn" data-action="cut-range">Cut</button>
+                  <button class="btn" data-action="paste-range">Paste</button>
+                  <button class="btn toggle" data-action="toggle-paste">Paste: Replace</button>
+                  <button class="btn wide" data-action="delete-range">Delete Range</button>
+                </div>
 
                 <div class="row">
                   <input class="chord" type="text" placeholder="Chord (e.g. Ebmaj7)"/>
@@ -1451,6 +1458,8 @@
           this.activeDuration = { dur: "q", dots: 0 };
           this.debugEnabled = false;
           this._debugLogKey = null;
+          this.pasteMode = "replace"; // replace | merge
+          this._clipboard = null;
           this._dirty = false;
           this._resizeHandler = () => {
             const next = this.getSystemWidth();
@@ -1569,13 +1578,8 @@
             this.setSingleSelection(endId, stringIndex, voiceId);
             return;
           }
-          const ordered = [...this._hitIndex]
-            .filter(h => h.voiceId === voiceId)
-            .sort((a, b) => (a.x - b.x) || (a.y - b.y));
-          const orderedIds = [];
-          for (const h of ordered) {
-            if (!orderedIds.includes(h.eventId)) orderedIds.push(h.eventId);
-          }
+          const ordered = this.getOrderedEventRefs(voiceId);
+          const orderedIds = ordered.map(o => o.id);
           const a = orderedIds.indexOf(startId);
           const b = orderedIds.indexOf(endId);
           if (a === -1 || b === -1) {
@@ -1636,6 +1640,48 @@
         getSelectedEventIds() {
           if (this.sel.rangeIds && this.sel.rangeIds.length) return this.sel.rangeIds;
           return this.sel.eventId ? [this.sel.eventId] : [];
+        }
+
+        getOrderedEventRefs(voiceId) {
+          const out = [];
+          this.piece.bars.forEach((bar, bi) => {
+            const vi = this.findVoiceIndex(bar, voiceId);
+            if (vi === -1) return;
+            const voice = bar.voices[vi];
+            const sorted = voice.events
+              .filter(ev => !isHiddenRestFiller(ev))
+              .map((ev, ei) => ({ ev, ei }))
+              .sort((a, b) => (a.ev.start - b.ev.start) || (a.ei - b.ei));
+            sorted.forEach(item => out.push({
+              id: item.ev.id,
+              bi,
+              vi,
+              ev: item.ev
+            }));
+          });
+          return out;
+        }
+
+        getSelectionRefs() {
+          const voiceId = this.sel.voiceId || "melody";
+          const ordered = this.getOrderedEventRefs(voiceId);
+          const ids = new Set(this.getSelectedEventIds());
+          return ordered.filter(o => ids.has(o.id));
+        }
+
+        getSelectionSpan(refs) {
+          if (!refs.length) return null;
+          const bar = this.piece.bars[refs[0].bi];
+          const barLen = barLengthBeats(bar, this.piece);
+          const startRef = refs[0];
+          const startAbs = (startRef.bi * barLen) + (startRef.ev.start ?? 0);
+          let endAbs = startAbs;
+          refs.forEach(r => {
+            const dur = durationWithDotsBeats(r.ev.duration.replace("r", ""), r.ev.dots || 0);
+            const abs = (r.bi * barLen) + (r.ev.start ?? 0) + dur;
+            endAbs = Math.max(endAbs, abs);
+          });
+          return { barLen, startAbs, endAbs };
         }
 
         getCurrentBarIndex() {
@@ -1793,6 +1839,259 @@
             if (!b.ties) return;
             b.ties = b.ties.filter(t => !(idSet.has(t.from) || idSet.has(t.to)));
           });
+          this.piece = next;
+          this.markDirty();
+          this.renderScore(() => this.refreshOverlaySelection());
+        }
+
+        buildClipboardFromSelection() {
+          const refs = this.getSelectionRefs();
+          if (!refs.length) return null;
+          const baseRef = refs[0];
+          const baseBar = baseRef.bi;
+          const baseStart = baseRef.ev.start ?? 0;
+          const barLen = barLengthBeats(this.piece.bars[baseBar], this.piece);
+          const voiceId = this.sel.voiceId || "melody";
+
+          const events = refs.map(r => ({
+            id: r.ev.id,
+            barOffset: r.bi - baseBar,
+            start: r.ev.start ?? 0,
+            duration: r.ev.duration,
+            dots: r.ev.dots || 0,
+            tones: (r.ev.tones || []).map(t => ({ string: t.string, fret: t.fret })),
+            chord: r.ev.chord || null,
+            tupletGroupId: r.ev.tupletGroupId || null
+          }));
+
+          const tuplets = [];
+          const tupletIdsByBar = new Map();
+          refs.forEach(r => {
+            if (!r.ev.tupletGroupId) return;
+            const key = r.bi;
+            if (!tupletIdsByBar.has(key)) tupletIdsByBar.set(key, new Set());
+            tupletIdsByBar.get(key).add(r.ev.tupletGroupId);
+          });
+          tupletIdsByBar.forEach((ids, bi) => {
+            const bar = this.piece.bars[bi];
+            const defs = (bar.tuplets || []).filter(t => ids.has(t.id))
+              .map(t => ({
+                id: t.id,
+                numNotes: t.numNotes,
+                notesOccupied: t.notesOccupied,
+                ratioed: t.ratioed,
+                bracketed: t.bracketed
+              }));
+            if (defs.length) tuplets.push({ barOffset: bi - baseBar, defs });
+          });
+
+          const idSet = new Set(refs.map(r => r.ev.id));
+          const techniques = [];
+          this.piece.bars.forEach((bar, bi) => {
+            (bar.guitar || []).forEach(t => {
+              if (idSet.has(t.on) || idSet.has(t.from) || idSet.has(t.to)) {
+                techniques.push({ barOffset: bi - baseBar, tech: { ...t } });
+              }
+            });
+          });
+
+          return {
+            version: 1,
+            voiceId,
+            barLen,
+            baseStart,
+            events,
+            tuplets,
+            techniques
+          };
+        }
+
+        async copySelectionToClipboard() {
+          const payload = this.buildClipboardFromSelection();
+          if (!payload) return;
+          this._clipboard = payload;
+          try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              await navigator.clipboard.writeText(JSON.stringify(payload));
+            }
+          } catch {
+            // ignore clipboard errors
+          }
+        }
+
+        deleteSelectionRange() {
+          const ids = this.getSelectedEventIds();
+          if (!ids.length) return;
+          const idSet = new Set(ids);
+          const next = clone(this.piece);
+          const affectedBars = new Set();
+
+          next.bars.forEach((bar, bi) => {
+            const vi = this.findVoiceIndex(bar, this.sel.voiceId || "melody");
+            if (vi === -1) return;
+            const voice = bar.voices[vi];
+            const before = voice.events.length;
+            voice.events = voice.events.filter(ev => !idSet.has(ev.id));
+            if (voice.events.length !== before) affectedBars.add(bi);
+          });
+
+          next.bars.forEach(b => {
+            if (!b.guitar) return;
+            b.guitar = b.guitar.filter(t => !(idSet.has(t.on) || idSet.has(t.from) || idSet.has(t.to)));
+          });
+
+          affectedBars.forEach(bi => {
+            const bar = next.bars[bi];
+            const vi = this.findVoiceIndex(bar, this.sel.voiceId || "melody");
+            if (vi === -1) return;
+            consolidateRestsForBar(next, bi, vi);
+            if (bar.tuplets) {
+              const used = new Set();
+              bar.voices.forEach(v => v.events.forEach(e => {
+                if (e.tupletGroupId) used.add(e.tupletGroupId);
+              }));
+              bar.tuplets = bar.tuplets.filter(t => used.has(t.id));
+            }
+            consolidateRestsIfEmpty(next, bi, vi);
+          });
+
+          this.piece = next;
+          this.markDirty();
+          this.renderScore(() => this.refreshOverlaySelection());
+        }
+
+        pasteClipboardAtSelection() {
+          const payload = this._clipboard;
+          if (!payload || !payload.events || !payload.events.length) return;
+
+          const ref = findEventRef(this.piece, this.sel.eventId);
+          if (!ref) return;
+          const baseBar = ref.bi;
+          const baseStart = ref.ev.start ?? 0;
+          const barLen = barLengthBeats(ref.bar, this.piece);
+          const voiceId = this.sel.voiceId || payload.voiceId || "melody";
+
+          const offsetBeats = (ev) => (ev.barOffset * payload.barLen) + (ev.start - payload.baseStart);
+          const maxSpan = payload.events.reduce((acc, ev) => {
+            const dur = durationWithDotsBeats(ev.duration.replace("r", ""), ev.dots || 0);
+            return Math.max(acc, offsetBeats(ev) + dur);
+          }, 0);
+
+          const next = clone(this.piece);
+          const absStart = (baseBar * barLen) + baseStart;
+          const absEnd = absStart + maxSpan;
+
+          if (this.pasteMode === "replace") {
+            next.bars.forEach((bar, bi) => {
+              const vi = this.findVoiceIndex(bar, voiceId);
+              if (vi === -1) return;
+              const voice = bar.voices[vi];
+              const removed = new Set();
+              voice.events = voice.events.filter(ev => {
+                const evAbs = (bi * barLen) + (ev.start ?? 0);
+                const keep = evAbs < absStart || evAbs >= absEnd;
+                if (!keep) removed.add(ev.id);
+                return keep;
+              });
+              if (bar.guitar && removed.size) {
+                bar.guitar = bar.guitar.filter(t => !(removed.has(t.on) || removed.has(t.from) || removed.has(t.to)));
+              }
+              if (bar.tuplets && removed.size) {
+                const used = new Set();
+                bar.voices.forEach(v => v.events.forEach(e => {
+                  if (e.tupletGroupId) used.add(e.tupletGroupId);
+                }));
+                bar.tuplets = bar.tuplets.filter(t => used.has(t.id));
+              }
+              consolidateRestsIfEmpty(next, bi, vi);
+            });
+          }
+
+          // create tuplets mapping per bar offset
+          const tupletMap = new Map(); // key: barOffset -> Map(oldId->newId)
+          (payload.tuplets || []).forEach(entry => {
+            const targetBar = baseBar + entry.barOffset;
+            while (targetBar >= next.bars.length) {
+              next.bars.push(createEmptyBarLike(next.bars[next.bars.length - 1]));
+            }
+            const bar = next.bars[targetBar];
+            bar.tuplets ||= [];
+            const map = new Map();
+            entry.defs.forEach(def => {
+              let tid;
+              do { tid = makeId("t"); } while (bar.tuplets.some(t => t.id === tid));
+              bar.tuplets.push({
+                id: tid,
+                numNotes: def.numNotes,
+                notesOccupied: def.notesOccupied,
+                ratioed: def.ratioed,
+                bracketed: def.bracketed
+              });
+              map.set(def.id, tid);
+            });
+            tupletMap.set(entry.barOffset, map);
+          });
+
+          const idMap = new Map();
+          const sortedEvents = [...payload.events].sort((a, b) =>
+            (a.barOffset - b.barOffset) || (a.start - b.start)
+          );
+
+          sortedEvents.forEach(ev => {
+            const offset = offsetBeats(ev);
+            let abs = absStart + offset;
+            let barIndex = Math.floor(abs / barLen);
+            let start = abs - (barIndex * barLen);
+            while (barIndex >= next.bars.length) {
+              next.bars.push(createEmptyBarLike(next.bars[next.bars.length - 1]));
+            }
+
+            const bar = next.bars[barIndex];
+            let vi = this.findVoiceIndex(bar, voiceId);
+            if (vi === -1) {
+              bar.voices.push({ id: voiceId, stemDirection: -1, events: [] });
+              vi = bar.voices.length - 1;
+            }
+
+            const id = makeId("n");
+            idMap.set(ev.id, id);
+            const isRest = ev.duration.includes("r") || (ev.tones || []).length === 0;
+            const duration = isRest ? (ev.duration.includes("r") ? ev.duration : `${ev.duration}r`) : ev.duration.replace("r", "");
+            const mappedTuplet = ev.tupletGroupId && tupletMap.get(ev.barOffset)?.get(ev.tupletGroupId);
+
+            bar.voices[vi].events.push({
+              id,
+              start: normalizeBeats(start),
+              duration,
+              dots: ev.dots || 0,
+              tones: (ev.tones || []).map(t => ({ string: t.string, fret: t.fret })),
+              chord: ev.chord || undefined,
+              tupletGroupId: mappedTuplet || undefined
+            });
+          });
+
+          // copy techniques with remapped IDs
+          (payload.techniques || []).forEach(entry => {
+            const targetBar = baseBar + entry.barOffset;
+            if (targetBar < 0) return;
+            while (targetBar >= next.bars.length) {
+              next.bars.push(createEmptyBarLike(next.bars[next.bars.length - 1]));
+            }
+            const tech = { ...entry.tech };
+            if (tech.on) tech.on = idMap.get(tech.on);
+            if (tech.from) tech.from = idMap.get(tech.from);
+            if (tech.to) tech.to = idMap.get(tech.to);
+            if (!tech.on && !tech.from && !tech.to) return;
+            next.bars[targetBar].guitar ||= [];
+            next.bars[targetBar].guitar.push(tech);
+          });
+
+          next.bars.forEach(bar => {
+            const vi = this.findVoiceIndex(bar, voiceId);
+            if (vi === -1) return;
+            bar.voices[vi].events.sort((a, b) => a.start - b.start);
+          });
+
           this.piece = next;
           this.markDirty();
           this.renderScore(() => this.refreshOverlaySelection());
@@ -1991,6 +2290,10 @@
 
           if (key === "Delete") {
             e.preventDefault();
+            if (this.sel.rangeIds && this.sel.rangeIds.length > 1) {
+              this.deleteSelectionRange();
+              return;
+            }
             this.piece = setRest(this.piece, this.sel.eventId);
             this.piece = normalizeVoiceForEvent(this.piece, this.sel.eventId, { reflow: this.reflowEnabled });
             const ref = findEventRef(this.piece, this.sel.eventId);
@@ -2022,6 +2325,10 @@
           // backspace clears buffer, or sets fret 0 if buffer empty
           if (key === "Backspace") {
             e.preventDefault();
+            if (this.sel.rangeIds && this.sel.rangeIds.length > 1) {
+              this.deleteSelectionRange();
+              return;
+            }
             if (this._fretBuffer) {
               this._fretBuffer = this._fretBuffer.slice(0, -1);
             } else {
@@ -2261,6 +2568,38 @@
             return;
           }
 
+          if (action === "copy-range") {
+            this.copySelectionToClipboard();
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "cut-range") {
+            this.copySelectionToClipboard();
+            this.deleteSelectionRange();
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "paste-range") {
+            this.pasteClipboardAtSelection();
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "delete-range") {
+            this.deleteSelectionRange();
+            this.wrap.focus();
+            return;
+          }
+
+          if (action === "toggle-paste") {
+            this.pasteMode = this.pasteMode === "replace" ? "merge" : "replace";
+            this.syncToggleButtons();
+            this.wrap.focus();
+            return;
+          }
+
             if (action === "tech-slide-in") {
               this.piece = addTechnique(this.piece, "slide-in", { on: this.sel.eventId, index: 0 });
               this.markDirty();
@@ -2408,6 +2747,7 @@
           const reflowBtn = this.shadowRoot.querySelector('[data-action="toggle-reflow"]');
           const entryBtn = this.shadowRoot.querySelector('[data-action="toggle-entry"]');
           const voiceBtn = this.shadowRoot.querySelector('[data-action="toggle-voice"]');
+          const pasteBtn = this.shadowRoot.querySelector('[data-action="toggle-paste"]');
           if (restBtn) restBtn.classList.toggle("on", this.restMode);
           if (reflowBtn) reflowBtn.classList.toggle("on", this.reflowEnabled);
           if (entryBtn) {
@@ -2418,6 +2758,10 @@
             const label = this.sel.voiceId === "bass" ? "Bass" : "Melody";
             voiceBtn.classList.toggle("on", this.sel.voiceId === "bass");
             voiceBtn.textContent = `Voice: ${label}`;
+          }
+          if (pasteBtn) {
+            pasteBtn.classList.toggle("on", this.pasteMode === "merge");
+            pasteBtn.textContent = `Paste: ${this.pasteMode === "merge" ? "Merge" : "Replace"}`;
           }
           const debugBtn = this.shadowRoot.querySelector('[data-action="toggle-debug"]');
           if (debugBtn) {
