@@ -671,3 +671,35 @@ test("tuplet modal reapply updates without contiguity error", async ({ page }) =
   expect(alertError).toBeFalsy();
 });
 
+test("tuplet entry mode keeps duration while entering notes", async ({ page }) => {
+  await openEditor(page);
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+  await page.keyboard.type("7");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("7");
+  await page.waitForTimeout(600);
+
+  await page.locator('jg-score-view [data-action="open-tuplet"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-action="apply"]').click();
+
+  await page.keyboard.type("6");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("6");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("6");
+  await page.waitForTimeout(600);
+
+  const parsed = await getPiece(page);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  expect(events.length).toBeGreaterThanOrEqual(5);
+  const tail = events.slice(-3);
+  tail.forEach(ev => {
+    expect(ev.duration).toBe("q");
+    expect(ev.dots || 0).toBe(0);
+    expect(ev.tupletGroupId).toBeTruthy();
+  });
+});
+

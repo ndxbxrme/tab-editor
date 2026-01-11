@@ -1229,6 +1229,7 @@
         let events = [...ref.voice.events]
           .filter(e => !isHiddenRestFiller(e))
           .sort((a, b) => a.start - b.start);
+        if (events.some(e => e.tupletGroupId)) return piece;
 
         if (reflow) {
           let t = 0;
@@ -2464,7 +2465,7 @@
             bracketed: !!this.tupletSettings.bracketed,
             barIndex: ref.bi,
             voiceId: ref.voice?.id || this.sel.voiceId,
-            cursorStart: normalizeBeats(ref.ev.start ?? 0),
+            cursorStart: ref.ev.start ?? 0,
             count: 0
           };
           this.markDirty();
@@ -2489,8 +2490,8 @@
           const baseDur = durationWithDotsBeats(ref.ev.duration.replace("r", ""), ref.ev.dots || 0);
           const oldStart = ref.ev.start ?? 0;
           const oldEnd = oldStart + baseDur;
-          const newStart = entry.cursorStart;
-          const newEnd = normalizeBeats(newStart + baseDur * factor);
+          const newStart = roundBeat(entry.cursorStart);
+          const newEnd = roundBeat(newStart + baseDur * factor);
 
           if (newStart >= barLen) {
             this.tupletEntry = { active: false };
@@ -2517,10 +2518,15 @@
             entry.active = false;
           }
           this.updateTupletButtonLabel();
-          return { nextStart: entry.cursorStart, barIndex: entry.barIndex, voiceId: entry.voiceId };
+          return {
+            nextStart: entry.cursorStart,
+            barIndex: entry.barIndex,
+            voiceId: entry.voiceId,
+            done: !entry.active
+          };
         }
 
-        ensureEventAtStart(barIndex, voiceId, start, duration, dots, explicitRest) {
+        ensureEventAtStart(barIndex, voiceId, start, duration, dots, explicitRest, { tupletId = null, noSplit = false } = {}) {
           const bar = this.piece.bars[barIndex];
           if (!bar) return null;
           let vi = this.findVoiceIndex(bar, voiceId);
@@ -2532,6 +2538,19 @@
           const eps = 1e-6;
           const existing = voice.events.find(ev => Math.abs((ev.start ?? 0) - start) < eps);
           if (existing) return existing.id;
+          if (noSplit) {
+            const ev = {
+              id: makeId("n"),
+              start,
+              duration: explicitRest ? duration : `${duration.replace("r", "")}r`,
+              dots: dots || 0,
+              tones: []
+            };
+            if (tupletId) ev.tupletGroupId = tupletId;
+            voice.events.push(ev);
+            voice.events.sort((a, b) => a.start - b.start);
+            return ev.id;
+          }
           const res = createEventAt(this.piece, barIndex, vi, start, duration, dots, explicitRest);
           return res.newEventId || null;
         }
@@ -2703,7 +2722,9 @@
           if (wasEmpty) {
             this.piece = pruneRestEventsFrom(this.piece, this.sel.eventId);
           }
-          this.piece = normalizeVoiceForEvent(this.piece, this.sel.eventId, { reflow: this.reflowEnabled });
+          if (!this.tupletEntry?.active) {
+            this.piece = normalizeVoiceForEvent(this.piece, this.sel.eventId, { reflow: this.reflowEnabled });
+          }
           this.markDirty();
 
           if (this.entryMode === "chord") {
@@ -2723,7 +2744,28 @@
               const dur = this.activeDuration.dur;
               const dots = this.activeDuration.dots || 0;
               const duration = this.restMode ? `${dur}r` : dur;
-              const nextId = this.ensureEventAtStart(tupletAdvance.barIndex, tupletAdvance.voiceId, tupletAdvance.nextStart, duration, dots, this.restMode);
+              const bar = this.piece.bars[tupletAdvance.barIndex];
+              const barLen = barLengthBeats(bar, this.piece);
+              const eps = 1e-6;
+              let nextId = null;
+              const isDone = tupletAdvance.done || tupletAdvance.nextStart >= barLen - eps;
+              if (isDone) {
+                let nextBarIndex = tupletAdvance.barIndex + 1;
+                while (nextBarIndex >= this.piece.bars.length) {
+                  this.piece.bars.push(createEmptyBarLike(bar));
+                }
+                nextId = this.ensureEventAtStart(nextBarIndex, tupletAdvance.voiceId, 0, duration, dots, this.restMode, { noSplit: true });
+              } else {
+                nextId = this.ensureEventAtStart(
+                  tupletAdvance.barIndex,
+                  tupletAdvance.voiceId,
+                  tupletAdvance.nextStart,
+                  duration,
+                  dots,
+                  this.restMode,
+                  { tupletId: this.tupletEntry?.active ? this.tupletEntry.tid : null, noSplit: true }
+                );
+              }
               if (nextId) this.setSingleSelection(nextId);
               this.renderScore(() => this.refreshOverlaySelection());
               return;
