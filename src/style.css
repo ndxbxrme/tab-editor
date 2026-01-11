@@ -1,0 +1,59 @@
+html, body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  width: 100%;
+}
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-bar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(0,0,0,.1);
+  background: #fafafa;
+}
+
+.app-btn {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,.14);
+  background: #fff;
+  cursor: pointer;
+}
+
+.app-btn.active {
+  background: rgba(0,188,212,.12);
+  border-color: rgba(0,188,212,.6);
+}
+
+.app-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.view {
+  display: none;
+  height: 100%;
+}
+
+.view.active {
+  display: block;
+}
+
+jg-score-view,
+jg-songbook {
+  width: 100%;
+  height: 100%;
+  display: block;
+}

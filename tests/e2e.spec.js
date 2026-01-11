@@ -1,7 +1,27 @@
 const { test, expect } = require("@playwright/test");
 
-test("loads editor and renders basic UI", async ({ page }) => {
+async function openEditor(page) {
   await page.goto("/");
+  await page.locator('.app-btn[data-view="editor"]').click();
+  await expect(page.locator("jg-score-view")).toBeVisible();
+}
+
+async function openSongbook(page) {
+  await page.goto("/");
+  await page.locator('.app-btn[data-view="songbook"]').click();
+  await expect(page.locator("jg-songbook")).toBeVisible();
+}
+
+async function getPiece(page) {
+  return await page.evaluate(() => {
+    const el = document.querySelector("jg-score-view");
+    if (!el || typeof el.getPieceClone !== "function") return null;
+    return el.getPieceClone();
+  });
+}
+
+test("loads editor and renders basic UI", async ({ page }) => {
+  await openEditor(page);
 
   const editor = page.locator("jg-score-view");
   await expect(editor).toBeVisible();
@@ -26,7 +46,7 @@ test("reset + duration change does not throw IncompleteVoice", async ({ page }) 
     if (msg.type() === "error") errors.push(msg.text());
   });
 
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -36,7 +56,7 @@ test("reset + duration change does not throw IncompleteVoice", async ({ page }) 
 });
 
 test("ArrowRight creates next slot when at end", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -50,15 +70,14 @@ test("ArrowRight creates next slot when at end", async ({ page }) => {
 
   await page.waitForTimeout(500);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars.flatMap(b => (b.voices?.[0]?.events || []));
   const sounding = events.filter(e => e && typeof e.duration === "string" && !e.duration.includes("r"));
   expect(sounding.length).toBeGreaterThanOrEqual(2);
 });
 
 test("edit second note fret after three entries", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -71,8 +90,7 @@ test("edit second note fret after three entries", async ({ page }) => {
   await page.keyboard.type("7");
   await page.waitForTimeout(600);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   expect(events.length).toBeGreaterThanOrEqual(3);
   const second = events.find(e => e.start === 1);
@@ -81,27 +99,25 @@ test("edit second note fret after three entries", async ({ page }) => {
   await page.keyboard.type("9");
   await page.waitForTimeout(600);
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
   const events2 = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const second2 = events2.find(e => e.start === 1);
   expect(second2.tones[0].fret).toBe(9);
 });
 
 test("duration change on empty note produces a rest", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const ev = parsed.bars[0].voices[0].events[0];
   expect(ev.duration).toBe("qr");
 });
 
 test("overflow creates tied continuation across bars", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -122,8 +138,7 @@ test("overflow creates tied continuation across bars", async ({ page }) => {
   await enterFret(5); // q at 2.5
   await enterFret(5); // overflow q -> 8 + 8 tie
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const bar0 = parsed.bars[0];
   const bar1 = parsed.bars[1];
 
@@ -137,7 +152,7 @@ test("overflow creates tied continuation across bars", async ({ page }) => {
 });
 
 test("syncopation persists into third bar after overflow", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -164,8 +179,7 @@ test("syncopation persists into third bar after overflow", async ({ page }) => {
   await enterFret(5);
   await enterFret(5);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const bar1 = parsed.bars[1];
   const bar2 = parsed.bars[2];
 
@@ -183,7 +197,7 @@ test("syncopation persists into third bar after overflow", async ({ page }) => {
 });
 
 test("sixteenths entry fills a bar", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="16"]').click();
@@ -199,8 +213,7 @@ test("sixteenths entry fills a bar", async ({ page }) => {
     await enterFret();
   }
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   expect(events.length).toBe(16);
   expect(events[0].duration).toBe("16");
@@ -208,7 +221,7 @@ test("sixteenths entry fills a bar", async ({ page }) => {
 });
 
 test("shift-click selects a range of notes", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -221,8 +234,7 @@ test("shift-click selects a range of notes", async ({ page }) => {
   await page.keyboard.type("5");
   await page.waitForTimeout(600);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const ids = events.slice(0, 3).map(e => e.id);
   const first = page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`);
@@ -236,7 +248,7 @@ test("shift-click selects a range of notes", async ({ page }) => {
 });
 
 test("apply tuplet to mixed-duration range", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
 
@@ -253,8 +265,7 @@ test("apply tuplet to mixed-duration range", async ({ page }) => {
   await page.keyboard.type("7");
   await page.waitForTimeout(600);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const ids = events.slice(0, 3).map(e => e.id);
 
@@ -264,12 +275,13 @@ test("apply tuplet to mixed-duration range", async ({ page }) => {
   await first.click();
   await third.click({ modifiers: ["Shift"] });
 
-  await page.locator('jg-score-view [data-tuplet="num"]').fill("3");
-  await page.locator('jg-score-view [data-tuplet="occ"]').fill("2");
-  await page.locator('jg-score-view [data-action="apply-tuplet"]').click();
+  await page.locator('jg-score-view [data-action="open-tuplet"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-field="tuplet_num"]').fill("3");
+  await page.locator('jg-modal [data-field="tuplet_occ"]').fill("2");
+  await page.locator('jg-modal [data-action="apply"]').click();
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
   const events2 = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const selected = events2.filter(e => ids.includes(e.id));
   const groupIds = Array.from(new Set(selected.map(e => e.tupletGroupId).filter(Boolean)));
@@ -282,7 +294,7 @@ test("apply tuplet to mixed-duration range", async ({ page }) => {
 });
 
 test("joe pass sextuplets fit four beats", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator("jg-score-view .hit").first().click();
@@ -296,8 +308,7 @@ test("joe pass sextuplets fit four beats", async ({ page }) => {
   await page.locator('jg-score-view [data-dur="16"]').click();
   for (let i = 0; i < 6; i++) await enterFret(5);
 
-  let jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  let parsed = JSON.parse(jsonText);
+  let parsed = await getPiece(page);
   let events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   let ids = events.map(e => e.id);
 
@@ -305,9 +316,11 @@ test("joe pass sextuplets fit four beats", async ({ page }) => {
   const firstRange = ids.slice(0, 6);
   await page.locator(`jg-score-view .hit[data-event-id="${firstRange[0]}"][data-string-index="0"]`).click();
   await page.locator(`jg-score-view .hit[data-event-id="${firstRange[5]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
-  await page.locator('jg-score-view [data-tuplet="num"]').fill("6");
-  await page.locator('jg-score-view [data-tuplet="occ"]').fill("4");
-  await page.locator('jg-score-view [data-action="apply-tuplet"]').click();
+  await page.locator('jg-score-view [data-action="open-tuplet"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-field="tuplet_num"]').fill("6");
+  await page.locator('jg-modal [data-field="tuplet_occ"]').fill("4");
+  await page.locator('jg-modal [data-action="apply"]').click();
 
   // Beat 2: 4x16th + 4x32nd -> sextuplet (mixed)
   await page.locator('jg-score-view [data-dur="16"]').click();
@@ -315,8 +328,7 @@ test("joe pass sextuplets fit four beats", async ({ page }) => {
   await page.locator('jg-score-view [data-dur="32"]').click();
   for (let i = 0; i < 4; i++) await enterFret(7);
 
-  jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  parsed = JSON.parse(jsonText);
+  parsed = await getPiece(page);
   events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   ids = events.map(e => e.id);
 
@@ -325,9 +337,11 @@ test("joe pass sextuplets fit four beats", async ({ page }) => {
   const secondRange = ids.slice(6, 14);
   await page.locator(`jg-score-view .hit[data-event-id="${secondRange[0]}"][data-string-index="0"]`).click();
   await page.locator(`jg-score-view .hit[data-event-id="${secondRange[7]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
-  await page.locator('jg-score-view [data-tuplet="num"]').fill("6");
-  await page.locator('jg-score-view [data-tuplet="occ"]').fill("4");
-  await page.locator('jg-score-view [data-action="apply-tuplet"]').click();
+  await page.locator('jg-score-view [data-action="open-tuplet"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-field="tuplet_num"]').fill("6");
+  await page.locator('jg-modal [data-field="tuplet_occ"]').fill("4");
+  await page.locator('jg-modal [data-action="apply"]').click();
 
   // Beat 3: 4x16th
   await page.locator('jg-score-view [data-dur="16"]').click();
@@ -336,8 +350,7 @@ test("joe pass sextuplets fit four beats", async ({ page }) => {
   // Beat 4: 4x16th
   for (let i = 0; i < 4; i++) await enterFret(9);
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
 
   // Expect all sounding notes to remain in the first bar.
   const bar0Notes = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
@@ -347,7 +360,7 @@ test("joe pass sextuplets fit four beats", async ({ page }) => {
 });
 
 test("range slur applies from first to last note", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -360,8 +373,7 @@ test("range slur applies from first to last note", async ({ page }) => {
   await page.keyboard.type("7");
   await page.waitForTimeout(600);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const ids = events.slice(0, 3).map(e => e.id);
 
@@ -369,14 +381,13 @@ test("range slur applies from first to last note", async ({ page }) => {
   await page.locator(`jg-score-view .hit[data-event-id="${ids[2]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
   await page.locator('jg-score-view [data-action="slur-range"]').click();
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
   const slurs = parsed2.bars[0].slurs || [];
   expect(slurs.some(s => s.from === ids[0] && s.to === ids[2])).toBeTruthy();
 });
 
 test("slide applies to adjacent range selection", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -387,8 +398,7 @@ test("slide applies to adjacent range selection", async ({ page }) => {
   await page.keyboard.type("5");
   await page.waitForTimeout(600);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const ids = events.slice(0, 2).map(e => e.id);
 
@@ -396,14 +406,13 @@ test("slide applies to adjacent range selection", async ({ page }) => {
   await page.locator(`jg-score-view .hit[data-event-id="${ids[1]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
   await page.locator('jg-score-view [data-action="tech-slide"]').click();
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
   const tech = parsed2.bars[0].guitar || [];
   expect(tech.some(t => t.type === "slide" && t.from === ids[0] && t.to === ids[1])).toBeTruthy();
 });
 
 test("add bass voice and enter a note", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-action="add-bass"]').click();
@@ -411,8 +420,7 @@ test("add bass voice and enter a note", async ({ page }) => {
   await page.keyboard.type("5");
   await page.waitForTimeout(600);
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const voices = parsed.bars[0].voices;
   const bass = voices.find(v => v.id === "bass");
   expect(bass).toBeTruthy();
@@ -421,7 +429,7 @@ test("add bass voice and enter a note", async ({ page }) => {
 });
 
 test("bass voice overflows into next bar", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-action="add-bass"]').click();
@@ -436,8 +444,7 @@ test("bass voice overflows into next bar", async ({ page }) => {
     await enterFret(5);
   }
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const bass0 = parsed.bars[0].voices.find(v => v.id === "bass");
   const bass1 = parsed.bars[1]?.voices?.find(v => v.id === "bass");
   const bar0Notes = bass0.events.filter(e => !e.duration.includes("r"));
@@ -448,7 +455,7 @@ test("bass voice overflows into next bar", async ({ page }) => {
 });
 
 test("delete range across bars", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -463,8 +470,7 @@ test("delete range across bars", async ({ page }) => {
     await enterFret(5);
   }
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const bar0 = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const bar1 = parsed.bars[1].voices[0].events.filter(e => !e.duration.includes("r"));
 
@@ -478,8 +484,7 @@ test("delete range across bars", async ({ page }) => {
 
   await page.locator('jg-score-view [data-action="delete-range"]').click();
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
   const bar0After = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const bar1After = parsed2.bars[1].voices[0].events.filter(e => !e.duration.includes("r"));
   expect(bar0After.length).toBe(0);
@@ -487,7 +492,7 @@ test("delete range across bars", async ({ page }) => {
 });
 
 test("copy/paste range preserves relative timing", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -502,8 +507,7 @@ test("copy/paste range preserves relative timing", async ({ page }) => {
     await enterFret(5);
   }
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const ids = events.map(e => e.id);
 
@@ -518,8 +522,7 @@ test("copy/paste range preserves relative timing", async ({ page }) => {
   await thirdHit.click();
   await page.locator('jg-score-view [data-action="paste-range"]').click();
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
   const events2 = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const starts = events2.map(e => e.start).sort((a, b) => a - b);
 
@@ -528,7 +531,7 @@ test("copy/paste range preserves relative timing", async ({ page }) => {
 });
 
 test("cut range removes notes and preserves clipboard", async ({ page }) => {
-  await page.goto("/");
+  await openEditor(page);
 
   await page.locator('jg-score-view [data-action="reset-piece"]').click();
   await page.locator('jg-score-view [data-dur="q"]').click();
@@ -543,8 +546,7 @@ test("cut range removes notes and preserves clipboard", async ({ page }) => {
     await enterFret(5);
   }
 
-  const jsonText = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed = JSON.parse(jsonText);
+  const parsed = await getPiece(page);
   const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   const ids = events.map(e => e.id);
 
@@ -555,8 +557,7 @@ test("cut range removes notes and preserves clipboard", async ({ page }) => {
 
   await page.locator('jg-score-view [data-action="cut-range"]').click();
 
-  const jsonText2 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed2 = JSON.parse(jsonText2);
+  const parsed2 = await getPiece(page);
   const events2 = parsed2.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   expect(events2.length).toBe(2);
 
@@ -565,8 +566,108 @@ test("cut range removes notes and preserves clipboard", async ({ page }) => {
   await thirdHit.click();
   await page.locator('jg-score-view [data-action="paste-range"]').click();
 
-  const jsonText3 = await page.locator("jg-score-view .json-io").inputValue();
-  const parsed3 = JSON.parse(jsonText3);
+  const parsed3 = await getPiece(page);
   const events3 = parsed3.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
   expect(events3.length).toBeGreaterThanOrEqual(3);
 });
+
+test("songbook save/load current piece", async ({ page }) => {
+  await openEditor(page);
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+  await page.keyboard.type("7");
+  const parsed = await getPiece(page);
+
+  await page.locator('.app-btn[data-view="songbook"]').click();
+  await page.locator('jg-songbook [data-action="save-current"]').click();
+  await expect(page.locator("jg-songbook .row")).toHaveCount(1);
+
+  await page.locator('jg-songbook [data-action="load"]').first().click();
+  await expect(page.locator("jg-score-view")).toBeVisible();
+  const parsed2 = await getPiece(page);
+  expect(parsed2).toMatchObject(parsed);
+});
+
+test("songbook new piece loads empty editor", async ({ page }) => {
+  await openSongbook(page);
+  await page.locator('jg-songbook [data-action="new-piece"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal >> [data-action="confirm"]').click();
+  await expect(page.locator("jg-score-view")).toBeVisible();
+  const parsed = await getPiece(page);
+  expect(parsed.bars.length).toBeGreaterThanOrEqual(1);
+  expect(parsed.bars[0].voices[0].events[0].duration).toContain("r");
+});
+
+test("meta modal applies piece title and updates toolbar", async ({ page }) => {
+  await openEditor(page);
+  await page.locator('jg-score-view [data-action="open-meta"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-action="tab"][data-tab="piece"]').click();
+  await page.locator('jg-modal [data-field="piece_title"]').fill("Test Tune");
+  await page.locator('jg-modal [data-action="apply_meta"]').click();
+
+  const parsed = await getPiece(page);
+  expect(parsed.meta.title).toBe("Test Tune");
+  await expect(page.locator("jg-score-view .piece-title")).toHaveText("Test Tune");
+});
+
+test("meta modal bar tab applies section and custom time fields toggle", async ({ page }) => {
+  await openEditor(page);
+  await page.locator('jg-score-view [data-action="open-meta"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-action="tab"][data-tab="bar"]').click();
+
+  const timeNum = page.locator('jg-modal [data-field="bar_time_num"]');
+  await expect(timeNum).toBeHidden();
+
+  await page.locator('jg-modal [data-field="bar_time_preset"]').selectOption("custom");
+  await expect(timeNum).toBeVisible();
+
+  await page.locator('jg-modal [data-field="bar_section"]').fill("B");
+  await page.locator('jg-modal [data-action="apply_meta"]').click();
+
+  const parsed = await getPiece(page);
+  expect(parsed.bars[0].meta.section.label).toBe("B");
+});
+
+test("tuplet modal reapply updates without contiguity error", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", (err) => errors.push(String(err)));
+  page.on("dialog", (dlg) => {
+    errors.push(dlg.message());
+    dlg.dismiss();
+  });
+
+  await openEditor(page);
+  await page.locator('jg-score-view [data-action="reset-piece"]').click();
+  await page.locator('jg-score-view [data-dur="q"]').click();
+  await page.locator("jg-score-view .hit").first().click();
+  await page.keyboard.type("7");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("7");
+  await page.waitForTimeout(600);
+  await page.keyboard.type("7");
+  await page.waitForTimeout(600);
+
+  const parsed = await getPiece(page);
+  const events = parsed.bars[0].voices[0].events.filter(e => !e.duration.includes("r"));
+  const ids = events.slice(0, 3).map(e => e.id);
+
+  await page.locator(`jg-score-view .hit[data-event-id="${ids[0]}"][data-string-index="0"]`).click();
+  await page.locator(`jg-score-view .hit[data-event-id="${ids[2]}"][data-string-index="0"]`).click({ modifiers: ["Shift"] });
+
+  await page.locator('jg-score-view [data-action="open-tuplet"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-action="apply"]').click();
+
+  await page.locator('jg-score-view [data-action="open-tuplet"]').click();
+  await page.locator("jg-modal").waitFor();
+  await page.locator('jg-modal [data-field="tuplet_ratio"]').check();
+  await page.locator('jg-modal [data-action="apply"]').click();
+
+  const alertError = errors.find((e) => e.includes("Tuplet ranges must be contiguous"));
+  expect(alertError).toBeFalsy();
+});
+
