@@ -1,4 +1,4 @@
-    import { showModal } from "./modal.js";
+﻿    import { showModal } from "./modal.js";
 
     const PIECE_JSON = {
       defaults: { timeSig: [4, 4], keySig: "Eb", clef: "treble" },
@@ -123,7 +123,7 @@
       document.head.appendChild(script);
     }
 
-    // Drop-in upgrade: adds an overlay “inline editor” (selection, keyboard nav, fret entry, duration/tech controls)
+    // Drop-in upgrade: adds an overlay â€œinline editorâ€ (selection, keyboard nav, fret entry, duration/tech controls)
     // Paste this whole block over your existing initJGScoreView() function body (same name), or merge the marked sections.
 
     function initJGScoreView() {
@@ -210,7 +210,10 @@
 
       let ID_SEQ = 1;
       function makeId(prefix = "e") {
-        return `${prefix}${ID_SEQ++}`;
+        if (typeof crypto !== "undefined" && crypto.randomUUID) {
+          return `${prefix}${crypto.randomUUID()}`;
+        }
+        return `${prefix}${Date.now().toString(36)}_${(ID_SEQ++)}`;
       }
 
       // ---------- Pitch helpers ----------
@@ -996,7 +999,7 @@
         return { piece, newEventId: firstId };
       }
 
-      // naive “create next note” (same duration, same voice, next start)
+      // naive â€œcreate next noteâ€ (same duration, same voice, next start)
       function createNextEvent(piece, eventId, opts = {}) {
         const next = clone(piece);
         const ref = findEventRef(next, eventId);
@@ -1334,7 +1337,11 @@
                 box-sizing: border-box;
               }
               .inspector h4 { margin: 0 0 8px; font-size: 13px; letter-spacing:.2px; }
-              .row { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px; align-items:center; }
+              .toolbar-grid { display:grid; grid-template-columns: 1.2fr 1.1fr 1fr; gap:10px; }
+              .group { display:flex; flex-direction:column; gap:6px; }
+              .group-title { font-size: 11px; text-transform: uppercase; letter-spacing: .6px; opacity:.6; }
+              .row { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
+              .row.tight { gap:4px; }
               .btn {
                 font: inherit;
                 font-size: 12px;
@@ -1348,6 +1355,8 @@
               .btn.wide { flex: 1 1 auto; }
               .btn.toggle { font-weight: 600; }
               .btn.toggle.alt { background: #f7f7f7; }
+              .btn.pill { border-radius: 999px; padding: 6px 10px; }
+              .btn.slim { padding: 4px 8px; font-size: 11px; }
               input[type="text"]{
                 font: inherit;
                 font-size: 12px;
@@ -1357,93 +1366,91 @@
                 width: 100%;
                 box-sizing:border-box;
               }
-              input[type="file"] { font-size: 12px; }
-              .json-io {
-                width: 100%;
-                min-height: 120px;
-                resize: vertical;
-                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                font-size: 11px;
-                padding: 6px 8px;
-                border-radius: 10px;
-                border: 1px solid rgba(0,0,0,.14);
-                box-sizing: border-box;
-              }
               .label { font-size: 11px; opacity: .7; }
-              .hint { font-size: 11px; opacity: .7; line-height:1.35; }
-              .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; padding: 1px 6px;
-                    border:1px solid rgba(0,0,0,.2); border-radius:8px; background:#fff; }
+              .title-chip { font-size: 12px; opacity: .8; }
+              .divider { height: 1px; background: rgba(0,0,0,.08); margin: 6px 0; }
+              .advanced { display:none; }
+              .advanced.open { display:block; }
             </style>
 
             <div class="shell" aria-label="Score editor">
               <div class="inspector">
                 <h4>Editing</h4>
 
-                <div class="row">
-                  <button class="btn dur" data-dur="w">w</button>
-                  <button class="btn dur" data-dur="h">h</button>
-                  <button class="btn dur" data-dur="q">q</button>
-                  <button class="btn dur" data-dur="8">8</button>
-                  <button class="btn dur" data-dur="16">16</button>
-                  <button class="btn dur" data-dur="32">32</button>
-                  <button class="btn" data-action="dot">???</button>
-                </div>
-                <div class="row">
-                  <button class="btn toggle" data-action="toggle-rest">Rest</button>
-                  <button class="btn toggle" data-action="toggle-reflow">Reflow</button>
-                  <button class="btn toggle alt" data-action="toggle-entry">Entry: Linear</button>
-                </div>
-                <div class="row">
-                  <button class="btn toggle" data-action="toggle-voice">Voice: Melody</button>
-                  <button class="btn" data-action="add-bass">Add Bass Voice</button>
-                  <button class="btn" data-action="remove-bass">Remove Bass Voice</button>
-                </div>
-                <div class="row">
-                  <button class="btn toggle" data-action="toggle-debug">Debug: Off</button>
-                </div>
-                <div class="row">
-                  <button class="btn" data-action="open-meta">Meta</button>
-                </div>
-                <div class="row">
-                  <span class="label">Piece</span>
-                  <span class="piece-title label"></span>
+                <div class="toolbar-grid">
+                  <div class="group">
+                    <div class="group-title">Rhythm</div>
+                    <div class="row tight">
+                      <button class="btn pill dur" data-dur="w">W</button>
+                      <button class="btn pill dur" data-dur="h">H</button>
+                      <button class="btn pill dur" data-dur="q">Q</button>
+                      <button class="btn pill dur" data-dur="8">8</button>
+                      <button class="btn pill dur" data-dur="16">16</button>
+                      <button class="btn pill dur" data-dur="32">32</button>
+                      <button class="btn pill" data-action="dot">.</button>
+                    </div>
+                    <div class="row">
+                      <button class="btn toggle pill" data-action="toggle-rest">Rest</button>
+                      <button class="btn toggle pill" data-action="toggle-reflow">Reflow</button>
+                      <button class="btn toggle pill alt" data-action="toggle-entry">Entry: Linear</button>
+                    </div>
+                  </div>
+
+                  <div class="group">
+                    <div class="group-title">Pitch + Articulation</div>
+                    <div class="row">
+                      <input class="chord" type="text" placeholder="Chord (e.g. Ebmaj7)"/>
+                    </div>
+                    <div class="row">
+                      <button class="btn pill" data-action="slur-range">Slur</button>
+                      <button class="btn pill" data-action="tie-range">Tie</button>
+                      <button class="btn pill" data-action="open-tuplet">Tuplet: 3 in 2</button>
+                    </div>
+                    <div class="row">
+                      <button class="btn pill slim" data-action="tech-h">H</button>
+                      <button class="btn pill slim" data-action="tech-p">P</button>
+                      <button class="btn pill slim" data-action="tech-slide">Slide</button>
+                      <button class="btn pill slim" data-action="tech-slide-in">Slide In</button>
+                      <button class="btn pill slim" data-action="tech-bend">Bend</button>
+                    </div>
+                  </div>
+
+                  <div class="group">
+                    <div class="group-title">Structure</div>
+                    <div class="row">
+                      <button class="btn toggle pill" data-action="toggle-voice">Voice: Melody</button>
+                      <button class="btn pill" data-action="add-bass">Add Bass</button>
+                      <button class="btn pill" data-action="remove-bass">Remove Bass</button>
+                    </div>
+                    <div class="row">
+                      <button class="btn pill" data-action="open-meta">Meta</button>
+                      <span class="title-chip piece-title">Untitled</span>
+                    </div>
+                    <div class="row">
+                      <button class="btn pill" data-action="new-note">New Note</button>
+                      <button class="btn pill" data-action="reset-piece">Reset</button>
+                      <button class="btn pill" data-action="open-data">Data</button>
+                    </div>
+                  </div>
                 </div>
 
+                <div class="divider"></div>
                 <div class="row">
-                  <button class="btn" data-action="open-tuplet">Tuplet: 3 in 2</button>
+                  <button class="btn pill" data-action="toggle-advanced">Advanced</button>
+                  <button class="btn pill" data-action="copy-range">Copy</button>
+                  <button class="btn pill" data-action="cut-range">Cut</button>
+                  <button class="btn pill" data-action="paste-range">Paste</button>
+                  <button class="btn toggle pill" data-action="toggle-paste">Paste: Replace</button>
+                  <button class="btn pill" data-action="delete-range">Delete Range</button>
                 </div>
 
-                <div class="row">
-                  <button class="btn" data-action="tech-h">H</button>
-                  <button class="btn" data-action="tech-p">P</button>
-                  <button class="btn" data-action="tech-slide">??-</button>
-                  <button class="btn" data-action="tech-slide-in">slide in</button>
-                  <button class="btn" data-action="tech-bend">bend</button>
-                  <button class="btn wide" data-action="clear-tech">clear tech</button>
-                </div>
-                <div class="row">
-                  <button class="btn" data-action="slur-range">Slur</button>
-                  <button class="btn" data-action="tie-range">Tie</button>
-                  <button class="btn wide" data-action="clear-slur">Clear Slur</button>
-                  <button class="btn wide" data-action="clear-tie">Clear Tie</button>
-                </div>
-                <div class="row">
-                  <button class="btn" data-action="copy-range">Copy</button>
-                  <button class="btn" data-action="cut-range">Cut</button>
-                  <button class="btn" data-action="paste-range">Paste</button>
-                  <button class="btn toggle" data-action="toggle-paste">Paste: Replace</button>
-                  <button class="btn wide" data-action="delete-range">Delete Range</button>
-                </div>
-                <div class="row">
-                  <input class="chord" type="text" placeholder="Chord (e.g. Ebmaj7)"/>
-                </div>
-
-                <div class="row">
-                  <button class="btn wide" data-action="new-note">Enter = new note</button>
-                  <button class="btn" data-action="reset-piece">Reset</button>
-                </div>
-                <div class="row">
-                  <button class="btn" data-action="open-data">Data</button>
+                <div class="advanced">
+                  <div class="row">
+                    <button class="btn pill" data-action="clear-slur">Clear Slur</button>
+                    <button class="btn pill" data-action="clear-tie">Clear Tie</button>
+                    <button class="btn pill" data-action="clear-tech">Clear Tech</button>
+                    <button class="btn pill" data-action="toggle-debug">Debug: Off</button>
+                  </div>
                 </div>
               </div>
               <div class="wrap" tabindex="0">
@@ -1471,6 +1478,7 @@
           this.debugEnabled = false;
           this.tupletSettings = { numNotes: 3, notesOccupied: 2, ratioed: true, bracketed: false };
           this.tupletEntry = { active: false };
+          this.advancedOpen = false;
           this._debugLogKey = null;
           this.pasteMode = "replace"; // replace | merge
           this._clipboard = null;
@@ -2642,7 +2650,7 @@
             this._fretBuffer += key;
             clearTimeout(this._fretBufferTimer);
             this._fretBufferTimer = setTimeout(() => this.commitFretBuffer(), 500);
-            // if buffer already looks like 2 digits, commit immediately (covers 10–24 fast)
+            // if buffer already looks like 2 digits, commit immediately (covers 10â€“24 fast)
             if (this._fretBuffer.length >= 2) this.commitFretBuffer();
             return;
           }
@@ -3049,6 +3057,13 @@
             return;
           }
 
+          if (action === "toggle-advanced") {
+            this.advancedOpen = !this.advancedOpen;
+            this.syncToggleButtons();
+            this.wrap.focus();
+            return;
+          }
+
           // Techniques: kept intentionally simple (single-note or adjacent-note)
             if (action === "tech-bend") {
               this.piece = addTechnique(this.piece, "bend", { on: this.sel.eventId, amount: "1/2", index: 0 });
@@ -3166,7 +3181,7 @@
               return;
             }
 
-            // H/P/Slide need adjacent “from/to”
+            // H/P/Slide need adjacent â€œfrom/toâ€
             if (action === "tech-h" || action === "tech-p" || action === "tech-slide") {
               const pair = this.getAdjacentPairFromSelection();
               if (!pair) {
@@ -3295,6 +3310,8 @@
           const entryBtn = this.shadowRoot.querySelector('[data-action="toggle-entry"]');
           const voiceBtn = this.shadowRoot.querySelector('[data-action="toggle-voice"]');
           const pasteBtn = this.shadowRoot.querySelector('[data-action="toggle-paste"]');
+          const advBtn = this.shadowRoot.querySelector('[data-action="toggle-advanced"]');
+          const advPanel = this.shadowRoot.querySelector(".advanced");
           if (restBtn) restBtn.classList.toggle("on", this.restMode);
           if (reflowBtn) reflowBtn.classList.toggle("on", this.reflowEnabled);
           if (entryBtn) {
@@ -3310,6 +3327,8 @@
             pasteBtn.classList.toggle("on", this.pasteMode === "merge");
             pasteBtn.textContent = `Paste: ${this.pasteMode === "merge" ? "Merge" : "Replace"}`;
           }
+          if (advBtn) advBtn.classList.toggle("on", this.advancedOpen);
+          if (advPanel) advPanel.classList.toggle("open", this.advancedOpen);
           const debugBtn = this.shadowRoot.querySelector('[data-action="toggle-debug"]');
           if (debugBtn) {
             debugBtn.classList.toggle("on", this.debugEnabled);
@@ -3470,7 +3489,7 @@
           let activeTimeSig = piece.defaults?.timeSig || [4, 4];
           let activeKeySig = piece.defaults?.keySig || "C";
 
-          // hits we’ll build for the overlay (tab “cells”)
+          // hits weâ€™ll build for the overlay (tab â€œcellsâ€)
           const overlayHits = [];
           const globalNoteById = new Map();
           const globalTies = bars.flatMap(b => b.ties || []);
@@ -3681,8 +3700,8 @@
 
               rowChordAnchors.push(...rt.chordAnchors);
 
-              // ---- build overlay “hit targets” for each sounding tab position ----
-              // We anchor to each string line (1..6). If the event doesn’t have that string, still allow selecting it.
+              // ---- build overlay â€œhit targetsâ€ for each sounding tab position ----
+              // We anchor to each string line (1..6). If the event doesnâ€™t have that string, still allow selecting it.
               const spines = rt.tabEventsByVoice || [];
               spines.forEach(spine => {
                 spine.events.forEach(ev => {
@@ -3692,7 +3711,7 @@
                   if (!tabNote) return;
 
                   for (let stringIndex = 0; stringIndex < 6; stringIndex++) {
-                    // place hit at this note’s X and the corresponding string line Y
+                    // place hit at this noteâ€™s X and the corresponding string line Y
                     const xAbs = tabNote.getAbsoluteX();
                     const yAbs = tabYForString(tabStave, stringIndex + 1);
                     overlayHits.push({ eventId: ev.id, stringIndex, voiceId: spine.voiceId, x: xAbs, y: yAbs });
@@ -3725,3 +3744,8 @@
 
       customElements.define("jg-score-view", JGScoreView);
     }
+
+
+
+
+
