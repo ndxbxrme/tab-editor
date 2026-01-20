@@ -1,4 +1,41 @@
 ﻿    import { showModal } from "./modal.js";
+    import {
+      addTechnique,
+      addTie,
+      applyRestState,
+      barLengthBeats,
+      baseDuration,
+      chooseDurationForBeats,
+      clone,
+      consolidateRestsForBar,
+      consolidateRestsIfEmpty,
+      createEmptyBarLike,
+      createEventAt,
+      createNextEvent,
+      durationForBeats,
+      durationPartsFromBeats,
+      durationWithDotsBeats,
+      ensureToneSlot,
+      findEventRef,
+      formatRests,
+      formatRestsForUnit,
+      getEventSpanBeats,
+      isAutoRest,
+      isHiddenRestFiller,
+      isRestEvent,
+      isSoundingEvent,
+      makeId,
+      normalizeBeats,
+      normalizeVoiceForEvent,
+      propagateTiedTones,
+      pruneRestEventsFrom,
+      removeTechnique,
+      setChord,
+      setDuration,
+      setFret,
+      setRest,
+      toggleDot
+    } from "./editor-helpers.js";
 
     const PIECE_JSON = {
       defaults: { timeSig: [4, 4], keySig: "Eb", clef: "treble" },
@@ -153,19 +190,6 @@
         return s.getNoteStartX() - s.getX();
       })();
 
-      const DURATION_OPTIONS = [
-        { dur: "w", dots: 0, beats: 4 },
-        { dur: "h", dots: 0, beats: 2 },
-        { dur: "q", dots: 0, beats: 1 },
-        { dur: "8", dots: 0, beats: 0.5 },
-        { dur: "16", dots: 0, beats: 0.25 },
-        { dur: "32", dots: 0, beats: 0.125 },
-        { dur: "h", dots: 1, beats: 3 },
-        { dur: "q", dots: 1, beats: 1.5 },
-        { dur: "8", dots: 1, beats: 0.75 },
-        { dur: "16", dots: 1, beats: 0.375 }
-      ].sort((a, b) => b.beats - a.beats);
-
       const KEY_SIG_OPTIONS = [
         { value: "", label: "Key (inherit)" },
         { value: "C", label: "C (0)" },
@@ -244,17 +268,6 @@
       }
 
       // ---------- Duration helpers ----------
-      const DURATION_BEATS = { w: 4, h: 2, q: 1, "8": 0.5, "16": 0.25, "32": 0.125 };
-      function baseDuration(duration) {
-        return DURATION_BEATS[duration.replace("r", "")] ?? 0;
-      }
-      function durationForBeats(beats) {
-        const entries = Object.entries(DURATION_BEATS);
-        for (const [dur, val] of entries) {
-          if (Math.abs(val - beats) < 1e-6) return dur;
-        }
-        return null;
-      }
       function applyDotsToNote(note, dots = 0) {
         if (!dots) return;
         if (typeof note.addDotToAll === "function") {
@@ -265,13 +278,6 @@
           for (let i = 0; i < dots; i++) Flow.Dot.buildAndAttach([note], { all: true });
         }
       }
-      function durationWithDotsBeats(duration, dots = 0) {
-        const b = baseDuration(duration);
-        let add = 0, frac = b / 2;
-        for (let i = 0; i < dots; i++) { add += frac; frac /= 2; }
-        return b + add;
-      }
-
       function shouldUseSoftMode(events, barLen) {
         const eps = 1e-6;
         if (events.some(e => e.tupletGroupId)) return true;
@@ -291,7 +297,7 @@
         let min = null;
         bar.voices.forEach(v => {
           v.events.forEach(ev => {
-            if (isHiddenRestFiller(ev)) return;
+            if (isHiddenRestFiller(ev) || isAutoRest(ev)) return;
             const beats = baseDuration(ev.duration);
             if (!beats) return;
             if (min === null || beats < min) min = beats;
@@ -786,511 +792,6 @@
 
       function timeSigKey(sig) { return `${sig[0]}/${sig[1]}`; }
 
-      // ============== EDITOR HELPERS (JSON mutations) ==============
-      function clone(obj) { return structuredClone ? structuredClone(obj) : JSON.parse(JSON.stringify(obj)); }
-
-      function findEventRef(piece, eventId) {
-        for (let bi = 0; bi < piece.bars.length; bi++) {
-          const bar = piece.bars[bi];
-          for (let vi = 0; vi < bar.voices.length; vi++) {
-            const voice = bar.voices[vi];
-            const ei = voice.events.findIndex(e => e.id === eventId);
-            if (ei !== -1) return { bi, vi, ei, bar, voice, ev: voice.events[ei] };
-          }
-        }
-        return null;
-      }
-
-      function ensureToneSlot(ev, stringIndex /*0..5*/) {
-        // store tones as array of {string,fret}; we map stringIndex -> actual string number (1..6)
-        const str = Math.max(1, Math.min(6, stringIndex + 1));
-        ev.tones ||= [];
-        // find existing tone on that string
-        let ti = ev.tones.findIndex(t => t.string === str);
-        if (ti === -1) {
-          ev.tones.push({ string: str, fret: 0 });
-          // keep tones stable top-to-bottom (1..6)
-          ev.tones.sort((a, b) => a.string - b.string);
-          ti = ev.tones.findIndex(t => t.string === str);
-        }
-        return ti;
-      }
-
-      function setFret(piece, eventId, stringIndex, fret) {
-        const next = clone(piece);
-        const ref = findEventRef(next, eventId);
-        if (!ref) return next;
-        const ti = ensureToneSlot(ref.ev, stringIndex);
-        ref.ev.tones[ti].fret = Math.max(0, Math.min(24, fret));
-        // if event was a rest, force to sounding
-        if (ref.ev.duration.includes("r")) ref.ev.duration = ref.ev.duration.replace("r", "");
-        propagateTiedTones(next, ref.ev.id);
-        return next;
-      }
-
-      function setRest(piece, eventId) {
-        const next = clone(piece);
-        const ref = findEventRef(next, eventId);
-        if (!ref) return next;
-        ref.ev.tones = [];
-        if (!ref.ev.duration.includes("r")) ref.ev.duration = `${ref.ev.duration}r`;
-        return next;
-      }
-
-      function setDuration(piece, eventId, dur) {
-        const next = clone(piece);
-        const ref = findEventRef(next, eventId);
-        if (!ref) return next;
-        ref.ev.duration = dur;
-        if (!ref.ev.tones || ref.ev.tones.length === 0) {
-          if (!ref.ev.duration.includes("r")) ref.ev.duration = `${ref.ev.duration}r`;
-        }
-        return next;
-      }
-
-      function applyRestState(piece, eventId, isRest) {
-        const ref = findEventRef(piece, eventId);
-        if (!ref) return piece;
-        if (isRest) {
-          ref.ev.tones = [];
-          if (!ref.ev.duration.includes("r")) ref.ev.duration = `${ref.ev.duration}r`;
-        } else if (ref.ev.duration.includes("r")) {
-          if (ref.ev.tones && ref.ev.tones.length > 0) {
-            ref.ev.duration = ref.ev.duration.replace("r", "");
-          }
-        }
-        return piece;
-      }
-
-      function isHiddenRestFiller(ev) {
-        return !!(ev && ev.hidden && ev.duration && ev.duration.includes("r"));
-      }
-
-      function toggleDot(piece, eventId) {
-        const next = clone(piece);
-        const ref = findEventRef(next, eventId);
-        if (!ref) return next;
-        ref.ev.dots = (ref.ev.dots || 0) ? 0 : 1;
-        return next;
-      }
-
-      function setChord(piece, eventId, chord) {
-        const next = clone(piece);
-        const ref = findEventRef(next, eventId);
-        if (!ref) return next;
-        if (!chord) delete ref.ev.chord;
-        else ref.ev.chord = chord;
-        return next;
-      }
-
-      function addTechnique(piece, type, payload) {
-        const next = clone(piece);
-        // techniques are stored per bar on bar.guitar
-        const ref = findEventRef(next, payload.on || payload.from || payload.to);
-        if (!ref) return next;
-        ref.bar.guitar ||= [];
-        ref.bar.guitar.push({ type, ...payload });
-        return next;
-      }
-
-      function propagateTiedTones(piece, startId) {
-        const ref = findEventRef(piece, startId);
-        if (!ref || !ref.ev.tones || !ref.ev.tones.length) return;
-        const tones = ref.ev.tones.map(t => ({ string: t.string, fret: t.fret }));
-        const forward = new Map();
-        piece.bars.forEach(b => {
-          (b.ties || []).forEach(t => forward.set(t.from, t.to));
-        });
-        let cur = startId;
-        while (forward.has(cur)) {
-          const nextId = forward.get(cur);
-          const r = findEventRef(piece, nextId);
-          if (!r) break;
-          r.ev.tones = tones.map(t => ({ string: t.string, fret: t.fret }));
-          if (r.ev.duration.includes("r")) r.ev.duration = r.ev.duration.replace("r", "");
-          cur = nextId;
-        }
-      }
-
-      function removeTechnique(piece, predicate) {
-        const next = clone(piece);
-        next.bars.forEach(b => {
-          if (!b.guitar) return;
-          b.guitar = b.guitar.filter(t => !predicate(t));
-        });
-        return next;
-      }
-
-      function createEmptyBarLike(bar) {
-        return {
-          meta: {},
-          voices: bar.voices.map(v => ({
-            id: v.id,
-            stemDirection: v.stemDirection,
-            events: []
-          }))
-        };
-      }
-
-      function createEventAt(piece, barIndex, voiceIndex, start, baseDuration, dots = 0, explicitRest = false) {
-        const refBar = piece.bars[barIndex];
-        const barLen = barLengthBeats(refBar, piece);
-        const templateVoice = refBar?.voices?.[voiceIndex] || refBar?.voices?.[0];
-        const templateId = templateVoice?.id || "melody";
-        const templateStem = templateVoice?.stemDirection ?? 1;
-        const baseDur = baseDuration.replace("r", "");
-        const totalBeats = durationWithDotsBeats(baseDur, dots);
-
-        let remaining = normalizeBeats(totalBeats);
-        let currentStart = normalizeBeats(start);
-        let currentBar = barIndex;
-        let firstId = null;
-        let prevId = null;
-
-        while (remaining > 0) {
-          while (currentStart >= barLen) {
-            currentStart = normalizeBeats(currentStart - barLen);
-            currentBar += 1;
-          }
-          while (currentBar >= piece.bars.length) {
-            piece.bars.push(createEmptyBarLike(refBar));
-          }
-
-          const remainingInBar = normalizeBeats(barLen - currentStart);
-          const segment = Math.min(remaining, remainingInBar);
-          const parts = durationPartsFromBeats(segment);
-
-          for (const part of parts) {
-            const barRef = piece.bars[currentBar];
-            let vi = barRef.voices.findIndex(v => v.id === templateId);
-            if (vi === -1) {
-              barRef.voices.push({ id: templateId, stemDirection: templateStem, events: [] });
-              vi = barRef.voices.length - 1;
-            }
-            const id = makeId("n");
-            const ev = {
-              id,
-              start: currentStart,
-              duration: `${part.dur}r`,
-              dots: part.dots,
-              tones: []
-            };
-            piece.bars[currentBar].voices[vi].events.push(ev);
-            if (!firstId) firstId = id;
-            if (prevId && !explicitRest) addTie(piece, prevId, id);
-            prevId = id;
-            currentStart = normalizeBeats(currentStart + part.beats);
-            remaining = normalizeBeats(remaining - part.beats);
-          }
-
-          if (currentStart >= barLen) {
-            currentStart = 0;
-            currentBar += 1;
-          }
-        }
-
-        piece.bars.forEach(b => {
-          const vi = b.voices.findIndex(v => v.id === templateId);
-          if (vi >= 0) {
-            b.voices[vi].events.sort((a, b) => a.start - b.start);
-          }
-        });
-
-        return { piece, newEventId: firstId };
-      }
-
-      // naive â€œcreate next noteâ€ (same duration, same voice, next start)
-      function createNextEvent(piece, eventId, opts = {}) {
-        const next = clone(piece);
-        const ref = findEventRef(next, eventId);
-        if (!ref) return { piece: next, newEventId: null, newEventBar: null };
-
-        const barLen = barLengthBeats(ref.bar, next);
-        const cur = ref.ev;
-        const baseDur = opts.duration || cur.duration;
-        const explicitRest = !!opts.explicitRest;
-        const dots = opts.dots || 0;
-        const step = durationWithDotsBeats(baseDur.replace("r", ""), dots);
-
-        let newStart = (cur.start ?? 0) + step;
-        let barIndex = ref.bi;
-
-        while (newStart >= barLen) {
-          newStart -= barLen;
-          barIndex += 1;
-        }
-
-        while (barIndex >= next.bars.length) {
-          next.bars.push(createEmptyBarLike(ref.bar));
-        }
-
-        let remaining = normalizeBeats(durationWithDotsBeats(baseDur.replace("r", ""), dots));
-        let currentStart = newStart;
-        let currentBar = barIndex;
-        let firstId = null;
-        let firstBar = null;
-        let prevId = null;
-
-        while (remaining > 0) {
-          while (currentStart >= barLen) {
-            currentStart -= barLen;
-            currentBar += 1;
-          }
-          while (currentBar >= next.bars.length) {
-            next.bars.push(createEmptyBarLike(ref.bar));
-          }
-
-          const remainingInBar = normalizeBeats(barLen - currentStart);
-          const segment = Math.min(remaining, remainingInBar);
-          const parts = durationPartsFromBeats(segment);
-
-          for (const part of parts) {
-            const id = makeId("n");
-            const ev = {
-              id,
-              start: currentStart,
-              duration: `${part.dur}r`,
-              dots: part.dots,
-              tones: []
-            };
-            next.bars[currentBar].voices[ref.vi].events.push(ev);
-            if (!firstId) { firstId = id; firstBar = currentBar; }
-            if (prevId && !explicitRest) addTie(next, prevId, id);
-            prevId = id;
-            currentStart = normalizeBeats(currentStart + part.beats);
-            remaining = normalizeBeats(remaining - part.beats);
-          }
-
-          if (currentStart >= barLen) {
-            currentStart = 0;
-            currentBar += 1;
-          }
-        }
-
-        next.bars.forEach(b => {
-          b.voices[ref.vi].events.sort((a,b)=>a.start-b.start);
-        });
-
-        return { piece: next, newEventId: firstId, newEventBar: firstBar };
-      }
-
-      function barLengthBeats(bar, piece) {
-        const [beats, beatValue] = (bar.meta?.timeSig || piece.defaults?.timeSig || [4, 4]);
-        return beats * (4 / beatValue);
-      }
-
-      function normalizeBeats(beats) {
-        const unit = 0.125;
-        return Math.max(0, Math.round(beats / unit) * unit);
-      }
-
-      function chooseDurationForBeats(maxBeats) {
-        const eps = 1e-6;
-        for (const opt of DURATION_OPTIONS) {
-          if (opt.beats <= maxBeats + eps) return opt;
-        }
-        return DURATION_OPTIONS[DURATION_OPTIONS.length - 1];
-      }
-
-      function durationPartsFromBeats(beats) {
-        const parts = [];
-        let left = normalizeBeats(beats);
-        const eps = 1e-6;
-        for (const opt of DURATION_OPTIONS) {
-          while (left >= opt.beats - eps) {
-            parts.push(opt);
-            left = normalizeBeats(left - opt.beats);
-          }
-        }
-        return parts.length ? parts : [DURATION_OPTIONS[DURATION_OPTIONS.length - 1]];
-      }
-
-      function addTie(piece, fromId, toId) {
-        const ref = findEventRef(piece, fromId);
-        if (!ref) return;
-        ref.bar.ties ||= [];
-        ref.bar.ties.push({ from: fromId, to: toId });
-      }
-
-      function restOptions() {
-        return DURATION_OPTIONS;
-      }
-
-      function isOnBeat(value, beatUnit) {
-        const eps = 1e-6;
-        return Math.abs((value / beatUnit) - Math.round(value / beatUnit)) < eps;
-      }
-
-      function restFitsBoundary(start, dur, beatUnit) {
-        const end = start + dur;
-        const eps = 1e-6;
-        if (dur < beatUnit - eps) {
-          return Math.floor(start / beatUnit) === Math.floor((end - eps) / beatUnit);
-        }
-        return isOnBeat(start, beatUnit) && isOnBeat(end, beatUnit);
-      }
-
-      function chooseRestForSpan(start, remaining, beatUnit) {
-        const eps = 1e-6;
-        for (const opt of restOptions()) {
-          if (opt.beats > remaining + eps) continue;
-          const startAligned = isOnBeat(start, beatUnit);
-          const endAligned = isOnBeat(start + opt.beats, beatUnit);
-          const dottedOk = opt.dots ? (startAligned && endAligned) : true;
-          if (!dottedOk) continue;
-          if (restFitsBoundary(start, opt.beats, beatUnit)) return opt;
-        }
-        return restOptions()[restOptions().length - 1];
-      }
-
-      function formatRests(remaining, startAt, bar, hidden) {
-        const rests = [];
-        let cursor = normalizeBeats(startAt);
-        let left = normalizeBeats(remaining);
-        const [beats, beatValue] = (bar.meta?.timeSig || [4, 4]);
-        const beatUnit = 4 / beatValue;
-        const eps = 1e-6;
-
-        while (left > eps) {
-          const opt = chooseRestForSpan(cursor, left, beatUnit);
-          rests.push({
-            id: makeId("r"),
-            start: cursor,
-            duration: `${opt.dur}r`,
-            dots: opt.dots,
-            tones: [],
-            hidden
-          });
-          cursor = normalizeBeats(cursor + opt.beats);
-          left = normalizeBeats(left - opt.beats);
-        }
-        return rests;
-      }
-
-      function isRestEvent(ev) {
-        return !!(ev && ev.duration && ev.duration.includes("r") && (!ev.tones || ev.tones.length === 0));
-      }
-
-      function isSoundingEvent(ev) {
-        return !!(ev && ev.tones && ev.tones.length > 0 && !ev.duration.includes("r"));
-      }
-
-      function pruneRestEventsFrom(piece, eventId) {
-        const ref = findEventRef(piece, eventId);
-        if (!ref) return piece;
-        const start = ref.ev.start ?? 0;
-        ref.voice.events = ref.voice.events.filter(ev =>
-          ev.id === eventId || !isRestEvent(ev) || (ev.start ?? 0) < start
-        );
-        return piece;
-      }
-
-      function consolidateRestsIfEmpty(piece, barIndex, voiceIndex) {
-        const bar = piece.bars?.[barIndex];
-        const voice = bar?.voices?.[voiceIndex];
-        if (!bar || !voice) return piece;
-        const hasSounding = voice.events.some(ev => ev.tones && ev.tones.length > 0 && !ev.duration.includes("r"));
-        if (hasSounding) return piece;
-        const barLen = barLengthBeats(bar, piece);
-        voice.events = formatRests(barLen, 0, bar, false);
-        return piece;
-      }
-
-      function consolidateRestsForBar(piece, barIndex, voiceIndex) {
-        const bar = piece.bars?.[barIndex];
-        const voice = bar?.voices?.[voiceIndex];
-        if (!bar || !voice) return piece;
-
-        const sounding = voice.events
-          .filter(isSoundingEvent)
-          .sort((a, b) => a.start - b.start);
-
-        const rebuilt = [];
-        let cursor = 0;
-        sounding.forEach(ev => {
-          const gap = normalizeBeats((ev.start ?? 0) - cursor);
-          if (gap > 0) {
-            rebuilt.push(...formatRests(gap, cursor, bar, false));
-          }
-          rebuilt.push(ev);
-          cursor = normalizeBeats((ev.start ?? 0) + durationWithDotsBeats(ev.duration, ev.dots || 0));
-        });
-        const tail = normalizeBeats(barLengthBeats(bar, piece) - cursor);
-        if (tail > 0) {
-          rebuilt.push(...formatRests(tail, cursor, bar, false));
-        }
-
-        voice.events = rebuilt.sort((a, b) => a.start - b.start);
-        return piece;
-      }
-
-      function normalizeVoiceForEvent(piece, eventId, { reflow = false } = {}) {
-        const ref = findEventRef(piece, eventId);
-        if (!ref) return piece;
-
-        const barLen = barLengthBeats(ref.bar, piece);
-        let events = [...ref.voice.events]
-          .filter(e => !isHiddenRestFiller(e))
-          .sort((a, b) => a.start - b.start);
-        if (events.some(e => e.tupletGroupId)) return piece;
-
-        if (reflow) {
-          let t = 0;
-          events.forEach(ev => {
-            ev.start = t;
-            t += durationWithDotsBeats(ev.duration, ev.dots || 0);
-          });
-        }
-
-        const evIndex = events.findIndex(e => e.id === eventId);
-        let total = events.reduce((sum, ev) => sum + durationWithDotsBeats(ev.duration, ev.dots || 0), 0);
-        total = normalizeBeats(total);
-
-        if (total > barLen) {
-          // remove trailing hidden rest fillers first
-          while (events.length) {
-            const last = events[events.length - 1];
-            if (!(last.hidden && last.duration.includes("r"))) break;
-            events.pop();
-          }
-          total = events.reduce((sum, ev) => sum + durationWithDotsBeats(ev.duration, ev.dots || 0), 0);
-          total = normalizeBeats(total);
-        }
-
-        if (total > barLen && evIndex !== -1 && !reflow) {
-          const ev = events[evIndex];
-          const evDur = durationWithDotsBeats(ev.duration, ev.dots || 0);
-          const otherTotal = normalizeBeats(total - evDur);
-          const remaining = normalizeBeats(barLen - otherTotal);
-          if (remaining > 0) {
-            const pick = chooseDurationForBeats(remaining);
-            const isRest = ev.duration.includes("r");
-            ev.duration = isRest ? `${pick.dur}r` : pick.dur;
-            if (pick.dots) ev.dots = pick.dots;
-            else delete ev.dots;
-          }
-          total = events.reduce((sum, e) => sum + durationWithDotsBeats(e.duration, e.dots || 0), 0);
-          total = normalizeBeats(total);
-        }
-
-        if (total > barLen) {
-          // drop events after the selected one (or from end if not found)
-          const cutIndex = evIndex !== -1 ? evIndex + 1 : events.length;
-          events = events.slice(0, cutIndex);
-          total = events.reduce((sum, e) => sum + durationWithDotsBeats(e.duration, e.dots || 0), 0);
-          total = normalizeBeats(total);
-        }
-
-        if (total < barLen) {
-          const last = events[events.length - 1];
-          const startAt = last ? last.start + durationWithDotsBeats(last.duration, last.dots || 0) : 0;
-          events.push(...formatRests(barLen - total, startAt, ref.bar, true));
-        }
-
-        ref.voice.events = events.sort((a, b) => a.start - b.start);
-        return piece;
-      }
-
       // ============== WEB COMPONENT WITH OVERLAY EDITOR ==============
       class JGScoreView extends HTMLElement {
         constructor() {
@@ -1678,7 +1179,7 @@
             if (vi === -1) return;
             const voice = bar.voices[vi];
             const sorted = voice.events
-              .filter(ev => !isHiddenRestFiller(ev))
+              .filter(ev => !isHiddenRestFiller(ev) && !isAutoRest(ev))
               .map((ev, ei) => ({ ev, ei }))
               .sort((a, b) => (a.ev.start - b.ev.start) || (a.ei - b.ei));
             sorted.forEach(item => out.push({
@@ -1914,7 +1415,8 @@
                 numNotes: t.numNotes,
                 notesOccupied: t.notesOccupied,
                 ratioed: t.ratioed,
-                bracketed: t.bracketed
+                bracketed: t.bracketed,
+                unitBeats: t.unitBeats
               }));
             if (defs.length) tuplets.push({ barOffset: bi - baseBar, defs });
           });
@@ -2252,7 +1754,8 @@
                 numNotes: def.numNotes,
                 notesOccupied: def.notesOccupied,
                 ratioed: def.ratioed,
-                bracketed: def.bracketed
+                bracketed: def.bracketed,
+                unitBeats: def.unitBeats
               });
               map.set(def.id, tid);
             });
@@ -2400,6 +1903,9 @@
           }
 
           const factor = notesOccupied / numNotes;
+          const unitBeats = Math.min(...selectedRefs.map(r =>
+            durationWithDotsBeats(r.ev.duration.replace("r", ""), r.ev.dots || 0)
+          ));
           const roundBeat = (v) => Math.round(v * 100000) / 100000;
           let cursor = startAt;
           selectedRefs.forEach(r => {
@@ -2426,7 +1932,8 @@
             numNotes,
             notesOccupied,
             ratioed: !!this.tupletSettings.ratioed,
-            bracketed: !!this.tupletSettings.bracketed
+            bracketed: !!this.tupletSettings.bracketed,
+            unitBeats
           });
 
           // remove tuplets no longer referenced in this bar
@@ -2457,12 +1964,14 @@
           bar.tuplets ||= [];
           let tid;
           do { tid = makeId("t"); } while (bar.tuplets.some(t => t.id === tid));
+          const unitBeats = durationWithDotsBeats(ref.ev.duration.replace("r", ""), ref.ev.dots || 0);
           bar.tuplets.push({
             id: tid,
             numNotes: this.tupletSettings.numNotes,
             notesOccupied: this.tupletSettings.notesOccupied,
             ratioed: !!this.tupletSettings.ratioed,
-            bracketed: !!this.tupletSettings.bracketed
+            bracketed: !!this.tupletSettings.bracketed,
+            unitBeats
           });
           this.tupletEntry = {
             active: true,
@@ -2778,6 +2287,37 @@
               this.renderScore(() => this.refreshOverlaySelection());
               return;
             }
+            const refNow = findEventRef(this.piece, this.sel.eventId);
+            if (refNow) {
+              const barLen = barLengthBeats(refNow.bar, this.piece);
+              const step = durationWithDotsBeats(refNow.ev.duration, refNow.ev.dots || 0);
+              let expectedStart = normalizeBeats((refNow.ev.start ?? 0) + step);
+              let barIndex = refNow.bi;
+              while (expectedStart >= barLen) {
+                expectedStart = normalizeBeats(expectedStart - barLen);
+                barIndex += 1;
+              }
+              while (barIndex >= this.piece.bars.length) {
+                this.piece.bars.push(createEmptyBarLike(refNow.bar));
+              }
+              const bar = this.piece.bars[barIndex];
+              const voice = bar?.voices?.find(v => v.id === refNow.voice?.id);
+              if (bar && voice) {
+                const eps = 1e-6;
+                const restAt = voice.events.find(ev => {
+                  if (!isRestEvent(ev)) return false;
+                  const span = getEventSpanBeats(ev, bar);
+                  return span.start - eps <= expectedStart && expectedStart < span.end + eps;
+                });
+                if (restAt) {
+                  const inserted = this.tryInsertRestAt(restAt.id, voice.id, this.sel.stringIndex, {
+                    startAt: expectedStart,
+                    allowOverflow: true
+                  });
+                  if (inserted) return;
+                }
+              }
+            }
             const startId = this.getTieChainEndId(this.sel.eventId) || this.sel.eventId;
             const { nextId } = this.ensureNextSlotFrom(startId);
               if (nextId) this.setSingleSelection(nextId);
@@ -2822,6 +2362,13 @@
             const nextId = ordered[i + 1].eventId;
             const nextRef = findEventRef(this.piece, nextId);
             if (currentRef && nextRef) {
+              if (isRestEvent(nextRef.ev)) {
+                const inserted = this.tryInsertRestAt(nextRef.ev.id, nextRef.voice?.id || this.sel.voiceId, this.sel.stringIndex, {
+                  startAt: nextRef.ev.start,
+                  allowOverflow: true
+                });
+                return { nextId: inserted || null, created: !!inserted };
+              }
               const barLen = barLengthBeats(currentRef.bar, this.piece);
               const step = durationWithDotsBeats(currentRef.ev.duration, currentRef.ev.dots || 0);
               let expectedStart = normalizeBeats((currentRef.ev.start ?? 0) + step);
@@ -2859,6 +2406,24 @@
             this.piece.bars.push(createEmptyBarLike(ref.bar));
           }
 
+          const bar = this.piece.bars[barIndex];
+          const voice = bar?.voices?.find(v => v.id === ref.voice.id);
+          if (bar && voice) {
+            const eps = 1e-6;
+            const restAt = voice.events.find(ev => {
+              if (!isRestEvent(ev)) return false;
+              const span = getEventSpanBeats(ev, bar);
+              return span.start - eps <= expectedStart && expectedStart < span.end + eps;
+            });
+            if (restAt) {
+                const inserted = this.tryInsertRestAt(restAt.id, voice.id, this.sel.stringIndex, {
+                  startAt: expectedStart,
+                  allowOverflow: true
+                });
+                return { nextId: inserted || null, created: !!inserted };
+              }
+          }
+
           const dur = this.activeDuration.dur;
           const dots = this.activeDuration.dots || 0;
           const duration = this.restMode ? `${dur}r` : dur;
@@ -2870,6 +2435,158 @@
           this.piece = normalizeVoiceForEvent(res.piece, keepId, { reflow: this.reflowEnabled });
           this.markDirty();
           return { nextId: res.newEventId || null, created: true };
+        }
+
+        getRestBlobForRef(ref) {
+          if (!ref || !isRestEvent(ref.ev)) return null;
+          const bar = this.piece.bars[ref.bi];
+          const voice = bar?.voices?.[ref.vi] || bar?.voices?.find(v => v.id === ref.voice?.id);
+          if (!bar || !voice) return null;
+          const spans = voice.events
+            .filter(ev => !isHiddenRestFiller(ev))
+            .map(ev => ({ ev, ...getEventSpanBeats(ev, bar) }))
+            .sort((a, b) => (a.start - b.start) || ((a.ev.start ?? 0) - (b.ev.start ?? 0)));
+          const idx = spans.findIndex(s => s.ev.id === ref.ev.id);
+          if (idx === -1) return null;
+          const eps = 1e-6;
+          let blobStart = spans[idx].start;
+          let blobEnd = spans[idx].end;
+          const eventIds = new Set([spans[idx].ev.id]);
+
+          let j = idx - 1;
+          while (j >= 0) {
+            const s = spans[j];
+            if (!isRestEvent(s.ev)) break;
+            if (s.end < blobStart - eps) break;
+            blobStart = Math.min(blobStart, s.start);
+            eventIds.add(s.ev.id);
+            j -= 1;
+          }
+
+          j = idx + 1;
+          while (j < spans.length) {
+            const s = spans[j];
+            if (!isRestEvent(s.ev)) break;
+            if (s.start > blobEnd + eps) break;
+            blobEnd = Math.max(blobEnd, s.end);
+            eventIds.add(s.ev.id);
+            j += 1;
+          }
+
+          return { bar, voice, blobStart, blobEnd, eventIds };
+        }
+
+        tryInsertRestAt(eventId, voiceId, stringIndex, { startAt, allowOverflow = false } = {}) {
+          const ref = findEventRef(this.piece, eventId);
+          if (!ref || !isRestEvent(ref.ev)) return null;
+          const blob = this.getRestBlobForRef(ref);
+          if (!blob) return null;
+
+          const bar = blob.bar;
+          const voice = blob.voice;
+          const barLen = barLengthBeats(bar, this.piece);
+          const dur = this.activeDuration.dur;
+          const dots = this.activeDuration.dots || 0;
+          const baseBeats = durationWithDotsBeats(dur, dots);
+          const eps = 1e-6;
+          const insertStart = startAt ?? ref.ev.start ?? blob.blobStart;
+
+          let factor = 1;
+          let unitBeats = null;
+          if (ref.ev.tupletGroupId) {
+            const def = (bar.tuplets || []).find(t => t.id === ref.ev.tupletGroupId);
+            if (def && def.numNotes && def.notesOccupied) {
+              factor = def.notesOccupied / def.numNotes;
+              unitBeats = def.unitBeats || baseBeats;
+            }
+          }
+
+          const scaledBeats = baseBeats * factor;
+          const isAtBarEnd = Math.abs(blob.blobEnd - barLen) < eps;
+          if (insertStart + scaledBeats > blob.blobEnd + eps) {
+            if (!(allowOverflow && isAtBarEnd && insertStart + scaledBeats > barLen + eps)) {
+              return null;
+            }
+          }
+
+          voice.events = voice.events.filter(ev => !blob.eventIds.has(ev.id));
+
+          if (!ref.ev.tupletGroupId && insertStart + scaledBeats > barLen + eps) {
+            const res = createEventAt(this.piece, ref.bi, ref.vi, insertStart, dur, dots, false);
+            const newId = res.newEventId || null;
+            if (newId) {
+              this.piece = normalizeVoiceForEvent(res.piece, newId, { reflow: this.reflowEnabled });
+              this.markDirty();
+              this.setSingleSelection(newId, stringIndex, voiceId || ref.voice?.id);
+              this.renderScore(() => this.refreshOverlaySelection());
+              return newId;
+            }
+          }
+
+          const newId = makeId("n");
+          const newRest = {
+            id: newId,
+            start: insertStart,
+            duration: `${dur}r`,
+            dots,
+            tones: []
+          };
+          if (ref.ev.tupletGroupId) newRest.tupletGroupId = ref.ev.tupletGroupId;
+          voice.events.push(newRest);
+
+          const before = insertStart - blob.blobStart;
+          const after = blob.blobEnd - (insertStart + scaledBeats);
+          if (before > eps) {
+            if (ref.ev.tupletGroupId && unitBeats) {
+              const restParts = formatRestsForUnit(before / factor, 0, unitBeats, false, { maxBeats: unitBeats, quantizeUnit: null });
+              let cursor = blob.blobStart;
+              restParts.forEach(part => {
+                voice.events.push({
+                  id: makeId("r"),
+                  start: cursor,
+                  duration: part.duration,
+                  dots: part.dots,
+                  tones: [],
+                  tupletGroupId: ref.ev.tupletGroupId,
+                  autoRest: true
+                });
+                cursor += durationWithDotsBeats(part.duration.replace("r", ""), part.dots || 0) * factor;
+              });
+            } else {
+              const rests = formatRests(before, blob.blobStart, bar, false)
+                .map(r => ({ ...r, autoRest: true }));
+              voice.events.push(...rests);
+            }
+          }
+          if (after > eps) {
+            if (ref.ev.tupletGroupId && unitBeats) {
+              const restParts = formatRestsForUnit(after / factor, 0, unitBeats, false, { maxBeats: unitBeats, quantizeUnit: null });
+              let cursor = insertStart + scaledBeats;
+              restParts.forEach(part => {
+                voice.events.push({
+                  id: makeId("r"),
+                  start: cursor,
+                  duration: part.duration,
+                  dots: part.dots,
+                  tones: [],
+                  tupletGroupId: ref.ev.tupletGroupId,
+                  autoRest: true
+                });
+                cursor += durationWithDotsBeats(part.duration.replace("r", ""), part.dots || 0) * factor;
+              });
+            } else {
+              const rests = formatRests(after, insertStart + scaledBeats, bar, false)
+                .map(r => ({ ...r, autoRest: true }));
+              voice.events.push(...rests);
+            }
+          }
+
+          voice.events.sort((a, b) => (a.start - b.start));
+          this.piece = normalizeVoiceForEvent(this.piece, newId, { reflow: this.reflowEnabled });
+          this.markDirty();
+          this.setSingleSelection(newId, stringIndex, voiceId || ref.voice?.id);
+          this.renderScore(() => this.refreshOverlaySelection());
+          return newId;
         }
 
 
@@ -3409,17 +3126,20 @@
 
             div.addEventListener("mousedown", (ev) => {
               ev.preventDefault();
-              if (ev.shiftKey) {
-                const anchor = this.sel.anchorId || this.sel.eventId || h.eventId;
-                this.selectRange(anchor, h.eventId, h.stringIndex, h.voiceId);
-              } else {
-                this.setSingleSelection(h.eventId, h.stringIndex, h.voiceId);
+              const didInsert = this.tryInsertRestAt(h.eventId, h.voiceId, h.stringIndex);
+              if (!didInsert) {
+                if (ev.shiftKey) {
+                  const anchor = this.sel.anchorId || this.sel.eventId || h.eventId;
+                  this.selectRange(anchor, h.eventId, h.stringIndex, h.voiceId);
+                } else {
+                  this.setSingleSelection(h.eventId, h.stringIndex, h.voiceId);
+                }
+                this._fretBuffer = "";
+                clearTimeout(this._fretBufferTimer);
+                this.refreshOverlaySelection();
+                this.syncInspectorFields();
+                this.wrap.focus();
               }
-              this._fretBuffer = "";
-              clearTimeout(this._fretBufferTimer);
-              this.refreshOverlaySelection();
-              this.syncInspectorFields();
-              this.wrap.focus();
             });
 
             this.overlay.appendChild(div);
@@ -3744,8 +3464,3 @@
 
       customElements.define("jg-score-view", JGScoreView);
     }
-
-
-
-
-
