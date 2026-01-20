@@ -48,6 +48,7 @@ export function initModal() {
       const body = opts.body || "";
       const fields = Array.isArray(opts.fields) ? opts.fields : [];
       const tabs = Array.isArray(opts.tabs) ? opts.tabs : null;
+      const tabDefs = tabs ? tabs : [{ id: "default", fields }];
       const layout = opts.layout || "stack";
       const columns = Number.isFinite(opts.columns) ? Math.max(1, opts.columns) : 1;
       const actions = Array.isArray(opts.actions) && opts.actions.length
@@ -58,6 +59,7 @@ export function initModal() {
           ];
 
       const activeTab = tabs && tabs.length ? (this._activeTab || tabs[0].id) : null;
+      this.primeValues(tabDefs);
 
       this.shadowRoot.innerHTML = `
         <style>
@@ -137,21 +139,16 @@ export function initModal() {
             </div>
           ` : ""}
           <div class="fields ${layout === "grid" ? "grid" : ""}">
-            ${(tabs ? tabs : [{ id: "default", fields }]).flatMap(tab => {
+            ${tabDefs.flatMap(tab => {
               const tabFields = tab.fields || [];
-              const hidden = tabs && tab.id !== activeTab;
               return tabFields.map(f => {
                 const value = this._values[f.name] ?? f.value ?? "";
-                const when = f.showWhen;
-                let display = hidden ? "none" : "";
-                if (!hidden && when && when.field) {
-                  const controller = this._values[when.field] ?? "";
-                  if (String(controller) !== String(when.value)) display = "none";
-                }
+                const whenField = f.showWhen?.field || "";
+                const whenValue = f.showWhen?.value ?? "";
                 const span = Number.isFinite(f.span) ? Math.max(1, f.span) : 1;
                 const spanStyle = layout === "grid" ? `grid-column: span ${span};` : "";
                 return `
-                  <label class="field" style="${display ? `display:${display};` : ""}${spanStyle}">
+                  <label class="field" data-tab="${tab.id}" data-when-field="${whenField}" data-when-value="${whenValue}" style="${spanStyle}">
                     ${f.label ? `<span class="label">${f.label}</span>` : ""}
                 ${f.type === "textarea"
                   ? `<textarea data-field="${f.name}" placeholder="${f.placeholder || ""}">${value}</textarea>`
@@ -194,8 +191,50 @@ export function initModal() {
         input.addEventListener(eventName, (e) => {
           const key = e.target.dataset.field;
           this._values[key] = e.target.type === "checkbox" ? e.target.checked : e.target.value;
-          if (tabs && tabs.length) this.render();
+          this.applyFieldVisibility();
         });
+      });
+
+      this.applyFieldVisibility();
+    }
+
+    primeValues(tabDefs) {
+      tabDefs.forEach(tab => {
+        (tab.fields || []).forEach(f => {
+          if (this._values[f.name] !== undefined) return;
+          if (f.type === "checkbox") {
+            this._values[f.name] = !!f.value;
+            return;
+          }
+          if (f.type === "select") {
+            if (f.value !== undefined) {
+              this._values[f.name] = f.value;
+              return;
+            }
+            const first = (f.options || [])[0];
+            this._values[f.name] = first ? first.value : "";
+            return;
+          }
+          this._values[f.name] = f.value ?? "";
+        });
+      });
+    }
+
+    applyFieldVisibility() {
+      const opts = this._opts || {};
+      const tabs = Array.isArray(opts.tabs) ? opts.tabs : null;
+      const activeTab = tabs && tabs.length ? (this._activeTab || tabs[0].id) : null;
+
+      this.shadowRoot.querySelectorAll(".field").forEach(field => {
+        let visible = true;
+        if (tabs && activeTab && field.dataset.tab !== activeTab) visible = false;
+        const whenField = field.dataset.whenField;
+        if (visible && whenField) {
+          const expected = String(field.dataset.whenValue || "");
+          const actual = String(this._values[whenField] ?? "");
+          if (actual !== expected) visible = false;
+        }
+        field.style.display = visible ? "" : "none";
       });
     }
 

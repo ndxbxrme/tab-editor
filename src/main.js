@@ -2,10 +2,12 @@ import "./style.css";
 import { initTabEditor } from "./editor.js";
 import { initSongbook } from "./songbook.js";
 import { initModal } from "./modal.js";
+import { initGuitarFretboard } from "./guitar-fretboard.js";
 
 initTabEditor();
 initSongbook();
 initModal();
+initGuitarFretboard();
 
 const songbook = document.querySelector("jg-songbook");
 const editor = document.querySelector("jg-score-view");

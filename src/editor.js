@@ -836,6 +836,9 @@
                 padding: 10px;
                 backdrop-filter: blur(6px);
                 box-sizing: border-box;
+                position: sticky;
+                top: 0;
+                z-index: 5;
               }
               .inspector h4 { margin: 0 0 8px; font-size: 13px; letter-spacing:.2px; }
               .toolbar-grid { display:grid; grid-template-columns: 1.2fr 1.1fr 1fr; gap:10px; }
@@ -872,6 +875,9 @@
               .divider { height: 1px; background: rgba(0,0,0,.08); margin: 6px 0; }
               .advanced { display:none; }
               .advanced.open { display:block; }
+              .fretboard-panel { display:flex; flex-direction:column; gap:6px; }
+              .fretboard-panel .group-title { margin-top: 2px; }
+              .fretboard-input { width: 100%; display:block; }
             </style>
 
             <div class="shell" aria-label="Score editor">
@@ -953,6 +959,12 @@
                     <button class="btn pill" data-action="toggle-debug">Debug: Off</button>
                   </div>
                 </div>
+
+                <div class="divider"></div>
+                <div class="fretboard-panel">
+                  <div class="group-title">Fretboard</div>
+                  <guitar-fretboard class="fretboard-input" tabindex="-1"></guitar-fretboard>
+                </div>
               </div>
               <div class="wrap" tabindex="0">
                 <div class="score-container"></div>
@@ -969,6 +981,8 @@
           this.overlay = this.shadowRoot.querySelector(".overlay");
           this.caretEl = this.shadowRoot.querySelector(".caret");
           this.inspector = this.shadowRoot.querySelector(".inspector");
+          this.fretboardEl = this.shadowRoot.querySelector("guitar-fretboard");
+          this._onFretboardNotesChange = (e) => this.onFretboardNotesChange(e);
 
           this.piece = null;
           this.systemW = DEFAULT_SYSTEM_W;
@@ -1015,6 +1029,10 @@
           // inspector UI
           this.inspector.addEventListener("click", (e) => this.onInspectorClick(e));
           this.shadowRoot.querySelector(".chord").addEventListener("change", (e) => this.onChordChange(e));
+          if (this.fretboardEl) {
+            this.fretboardEl.inputMode = "chord";
+            this.fretboardEl.addEventListener("noteschange", this._onFretboardNotesChange);
+          }
 
           const loaded = this.loadFromStorage() || clone(PIECE_JSON);
           this.loadPiece(loaded);
@@ -1024,6 +1042,9 @@
         }
 
         disconnectedCallback() {
+          if (this.fretboardEl) {
+            this.fretboardEl.removeEventListener("noteschange", this._onFretboardNotesChange);
+          }
           window.removeEventListener("resize", this._resizeHandler);
         }
 
@@ -2994,6 +3015,70 @@
           this.renderScore();
         }
 
+        syncFretboardFromSelection() {
+          if (!this.fretboardEl) return;
+          const ref = findEventRef(this.piece, this.sel.eventId);
+          const tones = ref?.ev?.tones || [];
+          const notes = tones.map(t => ({ string: t.string, fret: t.fret }));
+          if (typeof this.fretboardEl.setNotes === "function") {
+            this.fretboardEl.setNotes(notes, false);
+          } else {
+            this.fretboardEl.setAttribute("notes", JSON.stringify(notes));
+          }
+        }
+
+        onFretboardNotesChange(e) {
+          if (!this.sel.eventId) return;
+          const notes = Array.isArray(e.detail?.notes) ? e.detail.notes : [];
+          const next = clone(this.piece);
+          const ref = findEventRef(next, this.sel.eventId);
+          if (!ref) return;
+
+          const wasEmpty = !ref.ev.tones || ref.ev.tones.length === 0;
+          const byString = new Map();
+          notes.forEach(note => {
+            const string = Math.max(1, Math.min(6, Number(note.string)));
+            const fret = Math.max(0, Math.min(24, Number(note.fret)));
+            if (Number.isFinite(string) && Number.isFinite(fret)) {
+              byString.set(string, fret);
+            }
+          });
+
+          if (byString.size === 0) {
+            this.piece = setRest(this.piece, this.sel.eventId);
+            this.piece = normalizeVoiceForEvent(this.piece, this.sel.eventId, { reflow: this.reflowEnabled });
+            const liveRef = findEventRef(this.piece, this.sel.eventId);
+            if (liveRef && !liveRef.ev.hidden) this.piece = consolidateRestsForBar(this.piece, liveRef.bi, liveRef.vi);
+            this.markDirty();
+            this.renderScore(() => this.refreshOverlaySelection());
+            return;
+          }
+
+          ref.ev.tones = [...byString.entries()]
+            .sort((a, b) => a[0] - b[0])
+            .map(([string, fret]) => ({ string, fret }));
+          if (ref.ev.duration.includes("r")) ref.ev.duration = ref.ev.duration.replace("r", "");
+          if (wasEmpty) {
+            ref.ev.duration = this.activeDuration.dur;
+            const dots = this.activeDuration.dots || 0;
+            if (dots) ref.ev.dots = dots;
+            else delete ref.ev.dots;
+          }
+
+          propagateTiedTones(next, ref.ev.id);
+          this.piece = wasEmpty ? pruneRestEventsFrom(next, ref.ev.id) : next;
+          if (!this.tupletEntry?.active) {
+            this.piece = normalizeVoiceForEvent(this.piece, ref.ev.id, { reflow: this.reflowEnabled });
+          }
+          this.markDirty();
+          if (byString.size === 1) {
+            const only = [...byString.keys()][0];
+            this.sel.stringIndex = Math.max(0, Math.min(5, only - 1));
+          }
+          this.renderScore(() => this.refreshOverlaySelection());
+          this.wrap.focus({ preventScroll: true });
+        }
+
         syncInspectorFields() {
           const ref = findEventRef(this.piece, this.sel.eventId);
           if (!ref) return;
@@ -3019,6 +3104,7 @@
           if (titleEl) {
             titleEl.textContent = this.piece?.meta?.title || "Untitled";
           }
+          this.syncFretboardFromSelection();
         }
 
         syncToggleButtons() {
